@@ -23,6 +23,30 @@ const SIGKILL_TIMEOUT_MS = 5000;
 const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
 const SUBAGENT_MAX_DEPTH_ENV = "PI_SUBAGENT_MAX_DEPTH";
 
+// ---------------------------------------------------------------------------
+// Resolve the command needed to spawn a new `pi` process
+// ---------------------------------------------------------------------------
+
+/**
+ * Derive the spawn command from the current process context so that we
+ * can always use `shell: false`.
+ *
+ * On Windows, npm installs `pi` as a `.cmd` batch wrapper.  Spawning
+ * through `cmd.exe` (shell: true) introduces argument-quoting problems
+ * and unreliable signal / EOF propagation.  Instead we read the `node`
+ * binary path and the CLI entry-script path straight from the running
+ * process, which bypasses `.cmd` wrappers entirely.
+ */
+function resolvePiSpawn(): { command: string; prefixArgs: string[] } {
+  const isNode = /[\\/]node(?:\.exe)?$/i.test(process.execPath);
+  if (isNode && process.argv[1]) {
+    // Standard npm install: node /path/to/cli.js <args>
+    return { command: process.execPath, prefixArgs: [process.argv[1]] };
+  }
+  // Standalone / packaged binary
+  return { command: process.execPath, prefixArgs: [] };
+}
+
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
 // ---------------------------------------------------------------------------
@@ -217,15 +241,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     const exitCode = await new Promise<number>((resolve) => {
       const nextDepth = Math.max(0, Math.floor(parentDepth)) + 1;
       const propagatedMaxDepth = Math.max(0, Math.floor(maxDepth));
-      const proc = spawn("pi", piArgs, {
+      // Derive the node binary + CLI script from the running process so
+      // we can spawn with shell: false on every platform, avoiding the
+      // cmd.exe wrapper on Windows entirely.
+      const { command, prefixArgs } = resolvePiSpawn();
+
+      const proc = spawn(command, [...prefixArgs, ...piArgs], {
         cwd: taskCwd ?? cwd,
-        // On Windows, pi is installed as a .cmd batch wrapper which requires
-        // shell: true for spawn to resolve it via PATH.
-        shell: isWindows,
-        // Use "pipe" for stdin instead of "ignore" so we can explicitly
-        // close it, delivering a clean EOF to the child process. With
-        // "ignore" (NUL) through cmd.exe on Windows, the EOF signal may
-        // not propagate correctly to pi, causing it to never terminate.
+        shell: false,
         stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...process.env,
@@ -234,7 +257,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         },
       });
 
-      // Immediately close stdin so pi receives EOF and runs in
+      // Close stdin immediately so pi receives EOF and runs in
       // non-interactive / one-shot mode.
       proc.stdin.end();
 
@@ -267,9 +290,9 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         const kill = () => {
           wasAborted = true;
           if (isWindows) {
-            // On Windows, POSIX signals are not supported and shell: true
-            // creates an intermediate cmd.exe process. Use taskkill to
-            // terminate the entire process tree reliably.
+            // On Windows, POSIX signals are not supported and proc.kill()
+            // only terminates the immediate process, not its children.
+            // Use taskkill /T to tear down the entire process tree.
             if (proc.pid !== undefined) {
               exec(`taskkill /T /F /PID ${proc.pid}`, () => {});
             }
