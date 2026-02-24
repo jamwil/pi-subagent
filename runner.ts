@@ -222,13 +222,21 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         // On Windows, pi is installed as a .cmd batch wrapper which requires
         // shell: true for spawn to resolve it via PATH.
         shell: isWindows,
-        stdio: ["ignore", "pipe", "pipe"],
+        // Use "pipe" for stdin instead of "ignore" so we can explicitly
+        // close it, delivering a clean EOF to the child process. With
+        // "ignore" (NUL) through cmd.exe on Windows, the EOF signal may
+        // not propagate correctly to pi, causing it to never terminate.
+        stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...process.env,
           [SUBAGENT_DEPTH_ENV]: String(nextDepth),
           [SUBAGENT_MAX_DEPTH_ENV]: String(propagatedMaxDepth),
         },
       });
+
+      // Immediately close stdin so pi receives EOF and runs in
+      // non-interactive / one-shot mode.
+      proc.stdin.end();
 
       let buffer = "";
 
