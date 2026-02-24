@@ -4,7 +4,7 @@
  * Spawns isolated `pi` processes and streams results back via callbacks.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, exec } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -18,6 +18,7 @@ import {
   getFinalOutput,
 } from "./types.js";
 
+const isWindows = process.platform === "win32";
 const SIGKILL_TIMEOUT_MS = 5000;
 const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
 const SUBAGENT_MAX_DEPTH_ENV = "PI_SUBAGENT_MAX_DEPTH";
@@ -218,7 +219,9 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       const propagatedMaxDepth = Math.max(0, Math.floor(maxDepth));
       const proc = spawn("pi", piArgs, {
         cwd: taskCwd ?? cwd,
-        shell: false,
+        // On Windows, pi is installed as a .cmd batch wrapper which requires
+        // shell: true for spawn to resolve it via PATH.
+        shell: isWindows,
         stdio: ["ignore", "pipe", "pipe"],
         env: {
           ...process.env,
@@ -255,10 +258,19 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       if (signal) {
         const kill = () => {
           wasAborted = true;
-          proc.kill("SIGTERM");
-          setTimeout(() => {
-            if (!proc.killed) proc.kill("SIGKILL");
-          }, SIGKILL_TIMEOUT_MS);
+          if (isWindows) {
+            // On Windows, POSIX signals are not supported and shell: true
+            // creates an intermediate cmd.exe process. Use taskkill to
+            // terminate the entire process tree reliably.
+            if (proc.pid !== undefined) {
+              exec(`taskkill /T /F /PID ${proc.pid}`, () => {});
+            }
+          } else {
+            proc.kill("SIGTERM");
+            setTimeout(() => {
+              if (!proc.killed) proc.kill("SIGKILL");
+            }, SIGKILL_TIMEOUT_MS);
+          }
         };
         if (signal.aborted) kill();
         else signal.addEventListener("abort", kill, { once: true });
