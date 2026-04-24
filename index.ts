@@ -9,7 +9,7 @@
  *   - Parallel: { tasks: [{ agent: "name", task: "..." }, ...] }
  */
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI } from "@jamwil/pi"
 import { Type } from "@sinclair/typebox";
 import { type AgentConfig, discoverAgents } from "./agents.js";
 import { renderCall, renderResult } from "./render.js";

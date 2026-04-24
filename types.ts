@@ -2,7 +2,7 @@
  * Shared type definitions for the subagent extension.
  */
 
-import type { Message } from "@mariozechner/pi-ai";
+import type { Message } from "@jamwil/pi-ai";
 
 /** Aggregated token usage from a subagent run. */
 export interface UsageStats {

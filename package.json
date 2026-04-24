@@ -42,23 +42,23 @@
     "typescript": "^5.9.3"
   },
   "peerDependencies": {
-    "@mariozechner/pi-agent-core": ">=0.37.0",
-    "@mariozechner/pi-ai": ">=0.37.0",
-    "@mariozechner/pi-coding-agent": ">=0.37.0",
-    "@mariozechner/pi-tui": ">=0.37.0",
+    "@jamwil/pi-agent-core": ">=0.37.0",
+    "@jamwil/pi-ai": ">=0.37.0",
+    "@jamwil/pi": ">=0.37.0",
+    "@jamwil/pi-tui": ">=0.37.0",
     "@sinclair/typebox": ">=0.34.0"
   },
   "peerDependenciesMeta": {
-    "@mariozechner/pi-agent-core": {
+    "@jamwil/pi-agent-core": {
       "optional": true
     },
-    "@mariozechner/pi-coding-agent": {
+    "@jamwil/pi": {
       "optional": true
     },
-    "@mariozechner/pi-tui": {
+    "@jamwil/pi-tui": {
       "optional": true
     },
-    "@mariozechner/pi-ai": {
+    "@jamwil/pi-ai": {
       "optional": true
     },
     "@sinclair/typebox": {

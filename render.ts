@@ -3,8 +3,8 @@
  */
 
 import * as os from "node:os";
-import { getMarkdownTheme } from "@mariozechner/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import { getMarkdownTheme } from "@jamwil/pi";
+import { Container, Markdown, Spacer, Text } from "@jamwil/pi-tui";
 import {
 	type DisplayItem,
 	type SingleResult,
