@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseInheritedCliArgs } from "../runner-cli.js";
+import { getInheritedProjectTrustArgs, parseInheritedCliArgs } from "../runner-cli.js";
 
 test("forwards safe parent CLI flags and captures fallback model settings", () => {
   const parsed = parseInheritedCliArgs([
@@ -142,6 +142,55 @@ test("resolves inherited relative resource paths against the parent cwd", () => 
     process.chdir(previousCwd);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
+});
+
+test("does not consume positional prompts after built-in boolean flags", () => {
+  const forwardedBooleans = [
+    "--no-context-files",
+    "-nc",
+    "--no-builtin-tools",
+    "-nbt",
+  ];
+
+  for (const flag of forwardedBooleans) {
+    const parsed = parseInheritedCliArgs(["/usr/bin/node", "pi", flag, "parent prompt"]);
+    assert.deepEqual(parsed.alwaysProxy, [flag]);
+    assert.doesNotMatch(JSON.stringify(parsed), /parent prompt/);
+  }
+
+  for (const flag of ["--no-tools", "-nt"]) {
+    const parsed = parseInheritedCliArgs(["/usr/bin/node", "pi", flag, "parent prompt"]);
+    assert.equal(parsed.fallbackNoTools, true);
+    assert.doesNotMatch(JSON.stringify(parsed), /parent prompt/);
+  }
+
+  for (const [flag, expected] of [["--approve", true], ["-a", true], ["--no-approve", false], ["-na", false]]) {
+    const parsed = parseInheritedCliArgs(["/usr/bin/node", "pi", flag, "parent prompt"]);
+    assert.equal(parsed.projectTrustOverride, expected);
+    assert.doesNotMatch(JSON.stringify(parsed), /parent prompt/);
+  }
+});
+
+test("forwards exclude-tools values without consuming the parent prompt", () => {
+  for (const flag of ["--exclude-tools", "-xt"]) {
+    const parsed = parseInheritedCliArgs([
+      "/usr/bin/node",
+      "pi",
+      flag,
+      "write",
+      "parent prompt",
+    ]);
+    assert.deepEqual(parsed.alwaysProxy, [flag, "write"]);
+    assert.doesNotMatch(JSON.stringify(parsed), /parent prompt/);
+  }
+});
+
+test("limits temporary project approval to the same child working directory", () => {
+  assert.deepEqual(getInheritedProjectTrustArgs(true, true), ["--approve"]);
+  assert.deepEqual(getInheritedProjectTrustArgs(true, false), []);
+  assert.deepEqual(getInheritedProjectTrustArgs(false, true), ["--no-approve"]);
+  assert.deepEqual(getInheritedProjectTrustArgs(false, false), ["--no-approve"]);
+  assert.deepEqual(getInheritedProjectTrustArgs(undefined, true), []);
 });
 
 test("inherits no-tools when the parent disabled tools", () => {

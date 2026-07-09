@@ -10,7 +10,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { AgentConfig } from "./agents.js";
-import { parseInheritedCliArgs } from "./runner-cli.js";
+import { getInheritedProjectTrustArgs, parseInheritedCliArgs } from "./runner-cli.js";
 import { processPiJsonLine } from "./runner-events.js";
 import {
   type InitialContext,
@@ -125,12 +125,18 @@ export function buildPiArgs(
   session: SubagentSessionDetails | undefined,
   persistentSessionDir: string | undefined,
   callModel?: string,
+  inheritProjectApproval = true,
 ): string[] {
+  const projectTrustArgs = getInheritedProjectTrustArgs(
+    inheritedCliArgs.projectTrustOverride,
+    inheritProjectApproval,
+  );
   const args: string[] = [
     "--mode",
     "json",
     ...inheritedCliArgs.extensionArgs,
     ...inheritedCliArgs.alwaysProxy,
+    ...projectTrustArgs,
     "-p",
   ];
 
@@ -343,6 +349,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       session,
       persistentSessionDir,
       callModel,
+      path.resolve(callCwd ?? cwd) === path.resolve(cwd),
     );
     let wasAborted = false;
 

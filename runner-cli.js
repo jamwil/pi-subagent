@@ -34,6 +34,13 @@ function resolvePathArg(value, options = {}) {
   return value;
 }
 
+/** Build child trust flags without approving a different working directory. */
+export function getInheritedProjectTrustArgs(projectTrustOverride, inheritProjectApproval) {
+  if (projectTrustOverride === false) return ["--no-approve"];
+  if (projectTrustOverride === true && inheritProjectApproval) return ["--approve"];
+  return [];
+}
+
 /**
  * Parse process.argv into groups used for child pi invocations.
  *
@@ -49,6 +56,7 @@ export function parseInheritedCliArgs(argv) {
   let fallbackTools;
   let fallbackNoTools = false;
   let sessionDir;
+  let projectTrustOverride;
 
   let i = 2; // skip executable + script name
   while (i < argv.length) {
@@ -91,7 +99,14 @@ export function parseInheritedCliArgs(argv) {
       continue;
     }
 
-    if (["--subagent-prevent-cycles", "--list-models"].includes(flagName)) {
+    if (flagName === "--subagent-prevent-cycles") {
+      const normalizedNext = typeof nextToken === "string" ? nextToken.trim().toLowerCase() : "";
+      const hasExplicitBooleanValue = ["1", "0", "true", "false", "yes", "no", "on", "off"].includes(normalizedNext);
+      i += inlineValue === undefined && hasExplicitBooleanValue ? 2 : 1;
+      continue;
+    }
+
+    if (flagName === "--list-models") {
       const [, skip] = getValue();
       i += skip;
       continue;
@@ -156,6 +171,8 @@ export function parseInheritedCliArgs(argv) {
         "--api-key",
         "--system-prompt",
         "--models",
+        "--exclude-tools",
+        "-xt",
       ].includes(flagName)
     ) {
       const [value, skip] = getValue({ allowDashValue: true });
@@ -171,10 +188,26 @@ export function parseInheritedCliArgs(argv) {
         "--no-prompt-templates",
         "-np",
         "--no-themes",
+        "--no-context-files",
+        "-nc",
+        "--no-builtin-tools",
+        "-nbt",
         "--verbose",
       ].includes(flagName)
     ) {
       alwaysProxy.push(flagName);
+      i++;
+      continue;
+    }
+
+    if (flagName === "--approve" || flagName === "-a") {
+      projectTrustOverride = true;
+      i++;
+      continue;
+    }
+
+    if (flagName === "--no-approve" || flagName === "-na") {
+      projectTrustOverride = false;
       i++;
       continue;
     }
@@ -193,14 +226,14 @@ export function parseInheritedCliArgs(argv) {
       continue;
     }
 
-    if (flagName === "--tools") {
+    if (flagName === "--tools" || flagName === "-t") {
       const [value, skip] = getValue({ allowDashValue: true });
       if (value !== undefined) fallbackTools = value;
       i += skip;
       continue;
     }
 
-    if (flagName === "--no-tools") {
+    if (flagName === "--no-tools" || flagName === "-nt") {
       fallbackNoTools = true;
       i++;
       continue;
@@ -230,5 +263,6 @@ export function parseInheritedCliArgs(argv) {
     fallbackTools,
     fallbackNoTools,
     sessionDir,
+    projectTrustOverride,
   };
 }

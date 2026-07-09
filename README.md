@@ -170,7 +170,7 @@ Each subagent runs in a separate `pi` process:
 - No visibility into sibling subagents.
 - Its own model/tool/runtime loop.
 - Started with `PI_OFFLINE=1` to skip startup network operations and reduce latency.
-- Inherits relevant parent CLI configuration such as extensions, provider/theme/skill flags, model/thinking/tool defaults, and custom session storage when applicable. A per-call `model` overrides the agent file's default model.
+- Inherits relevant parent CLI configuration such as extensions, provider/theme/skill flags, model/thinking/tool defaults, and custom session storage when applicable. Temporary `--approve` trust is inherited only when the child uses the same working directory; `--no-approve` is always preserved. A per-call `model` overrides the agent file's default model.
 
 The main agent receives a concise text summary for each subagent call. Tool calls, usage, generated session IDs, and creation metadata are available to the TUI and tool result details; the text summary includes only the logical `session` handle in the call header when one was provided.
 
