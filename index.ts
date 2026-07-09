@@ -933,15 +933,19 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       if (!onUpdate) return;
       const running = allResults.filter((r) => r.exitCode === -1).length;
       const done = allResults.filter((r) => r.exitCode !== -1).length;
-      onUpdate({
-        content: [
-          {
-            type: "text",
-            text: `Subagents: ${done}/${allResults.length} done, ${running} running...`,
-          },
-        ],
-        details: makeDetails([...allResults]),
-      });
+      try {
+        onUpdate({
+          content: [
+            {
+              type: "text",
+              text: `Subagents: ${done}/${allResults.length} done, ${running} running...`,
+            },
+          ],
+          details: makeDetails([...allResults]),
+        });
+      } catch (error) {
+        console.warn(`[pi-subagent] Progress callback failed: ${String(error)}`);
+      }
     };
 
     let heartbeat: NodeJS.Timeout | undefined;
@@ -958,32 +962,45 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         calls,
         MAX_CONCURRENCY,
         async (call, workerIndex) => {
-          const result = await runAgent({
-            cwd: defaultCwd,
-            agents,
-            callIndex: call.index,
-            agentName: call.agent,
-            prompt: call.prompt,
-            callModel: call.model,
-            callCwd: call.effectiveCwd,
-            initialContext: call.initialContext,
-            parentSessionSnapshotJsonl,
-            session: call.session,
-            persistentSessionDir,
-            parentDepth: currentDepth,
-            parentAgentStack: ancestorAgentStack,
-            maxDepth,
-            preventCycles,
-            timeoutMs: call.timeoutMs,
-            signal,
-            onUpdate: (partial) => {
-              if (partial.details?.results[0]) {
-                allResults[workerIndex] = partial.details.results[0];
-                emitProgress();
-              }
-            },
-            makeDetails,
-          });
+          let result: SingleResult;
+          try {
+            result = await runAgent({
+              cwd: defaultCwd,
+              agents,
+              callIndex: call.index,
+              agentName: call.agent,
+              prompt: call.prompt,
+              callModel: call.model,
+              callCwd: call.effectiveCwd,
+              initialContext: call.initialContext,
+              parentSessionSnapshotJsonl,
+              session: call.session,
+              persistentSessionDir,
+              parentDepth: currentDepth,
+              parentAgentStack: ancestorAgentStack,
+              maxDepth,
+              preventCycles,
+              timeoutMs: call.timeoutMs,
+              signal,
+              onUpdate: (partial) => {
+                if (partial.details?.results[0]) {
+                  allResults[workerIndex] = partial.details.results[0];
+                  emitProgress();
+                }
+              },
+              makeDetails,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            result = {
+              ...makePlaceholderResult(call),
+              exitCode: 1,
+              stderr: message,
+              stopReason: "error",
+              errorMessage: message,
+              processError: true,
+            };
+          }
           allResults[workerIndex] = result;
           emitProgress();
           return result;

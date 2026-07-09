@@ -86,8 +86,13 @@ function writePromptToTempFile(
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
   const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
-  fs.writeFileSync(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
-  return { dir: tmpDir, filePath };
+  try {
+    fs.writeFileSync(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+    return { dir: tmpDir, filePath };
+  } catch (error) {
+    cleanupTempDir(tmpDir);
+    throw error;
+  }
 }
 
 function writeSessionSnapshotToTempFile(
@@ -97,8 +102,13 @@ function writeSessionSnapshotToTempFile(
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
   const filePath = path.join(tmpDir, `parent-${safeName}.jsonl`);
-  fs.writeFileSync(filePath, sessionJsonl, { encoding: "utf-8", mode: 0o600 });
-  return { dir: tmpDir, filePath };
+  try {
+    fs.writeFileSync(filePath, sessionJsonl, { encoding: "utf-8", mode: 0o600 });
+    return { dir: tmpDir, filePath };
+  } catch (error) {
+    cleanupTempDir(tmpDir);
+    throw error;
+  }
 }
 
 function cleanupTempDir(dir: string | null): void {
@@ -345,29 +355,31 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     });
   };
 
+  let wasAborted = false;
   // Write system prompt to temp file if needed.
   let promptTmpDir: string | null = null;
   let promptTmpPath: string | null = null;
-  if (agent.systemPrompt.trim()) {
-    const tmp = writePromptToTempFile(agent.name, agent.systemPrompt);
-    promptTmpDir = tmp.dir;
-    promptTmpPath = tmp.filePath;
-  }
-
-  // Write parent session snapshot if this call needs one.
   let parentSessionTmpDir: string | null = null;
   let parentSessionTmpPath: string | null = null;
-  if (needsParentSnapshot && parentSessionSnapshotJsonl) {
-    const snapshotCwd = path.resolve(callCwd ?? cwd);
-    const snapshotJsonl =
-      rewriteSessionHeaderCwd(parentSessionSnapshotJsonl, snapshotCwd) ??
-      parentSessionSnapshotJsonl;
-    const tmp = writeSessionSnapshotToTempFile(agent.name, snapshotJsonl);
-    parentSessionTmpDir = tmp.dir;
-    parentSessionTmpPath = tmp.filePath;
-  }
 
   try {
+    if (agent.systemPrompt.trim()) {
+      const tmp = writePromptToTempFile(agent.name, agent.systemPrompt);
+      promptTmpDir = tmp.dir;
+      promptTmpPath = tmp.filePath;
+    }
+
+    // Write parent session snapshot if this call needs one.
+    if (needsParentSnapshot && parentSessionSnapshotJsonl) {
+      const snapshotCwd = path.resolve(callCwd ?? cwd);
+      const snapshotJsonl =
+        rewriteSessionHeaderCwd(parentSessionSnapshotJsonl, snapshotCwd) ??
+        parentSessionSnapshotJsonl;
+      const tmp = writeSessionSnapshotToTempFile(agent.name, snapshotJsonl);
+      parentSessionTmpDir = tmp.dir;
+      parentSessionTmpPath = tmp.filePath;
+    }
+
     const piArgs = buildPiArgs(
       agent,
       promptTmpPath,
@@ -379,7 +391,6 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       callModel,
       path.resolve(callCwd ?? cwd) === path.resolve(cwd),
     );
-    let wasAborted = false;
 
     const exitCode = await new Promise<number>((resolve) => {
       const nextDepth = Math.max(0, Math.floor(parentDepth)) + 1;
@@ -621,6 +632,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     });
 
     result.exitCode = exitCode;
+    return normalizeCompletedResult(result, wasAborted);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    result.exitCode = 1;
+    result.processError = true;
+    result.stopReason = "error";
+    result.errorMessage = message;
+    if (!result.stderr.trim()) result.stderr = message;
     return normalizeCompletedResult(result, wasAborted);
   } finally {
     cleanupTempDir(promptTmpDir);

@@ -321,6 +321,41 @@ test("runAgent returns immediately when the signal is already aborted", async ()
   }
 });
 
+test("runAgent converts synchronous spawn failures into structured results", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { runAgent } = await import(moduleUrl);
+    const result = await runAgent({
+      cwd: process.cwd(),
+      agents: [
+        {
+          name: "invalid-model",
+          description: "invalid model",
+          source: "user",
+          systemPrompt: "",
+          model: "bad\0model",
+        },
+      ],
+      callIndex: 0,
+      agentName: "invalid-model",
+      prompt: "hello",
+      initialContext: "empty",
+      parentDepth: 0,
+      parentAgentStack: [],
+      maxDepth: 3,
+      preventCycles: true,
+      makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+    });
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.processError, true);
+    assert.equal(result.stopReason, "error");
+    assert.match(result.errorMessage, /null bytes|invalid/i);
+  } finally {
+    cleanup();
+  }
+});
+
 test("runAgent waits for agent_settled across multiple low-level runs", () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-settled-"));
