@@ -323,9 +323,11 @@ function resolveDelegationDepthConfig(pi: ExtensionAPI): DelegationDepthConfig {
 }
 
 function makeDetailsFactory(projectAgentsDir: string | null) {
-  return (results: SingleResult[]): SubagentDetails => ({
+  return (results: SingleResult[], failed = false): SubagentDetails => ({
+    kind: "pi-subagent",
     projectAgentsDir,
     results,
+    ...(failed ? { failed: true as const } : {}),
   });
 }
 
@@ -687,6 +689,14 @@ export default function (pi: ExtensionAPI) {
     };
   });
 
+  pi.on("tool_result", (event) => {
+    if (event.toolName !== "subagent") return;
+    const details = event.details as Partial<SubagentDetails> | undefined;
+    if (details?.kind === "pi-subagent" && details.failed === true) {
+      return { isError: true };
+    }
+  });
+
   // Register the subagent tool.
   if (canDelegate) {
     pi.registerTool({
@@ -708,8 +718,7 @@ export default function (pi: ExtensionAPI) {
         if (normalized.error || !normalized.calls) {
           return {
             content: [{ type: "text", text: normalized.error ?? "Invalid subagent parameters." }],
-            details: makeDetails([]),
-            isError: true,
+            details: makeDetails([], true),
           };
         }
         const calls = normalized.calls;
@@ -720,8 +729,7 @@ export default function (pi: ExtensionAPI) {
         if (duplicateSessionError) {
           return {
             content: [{ type: "text", text: duplicateSessionError }],
-            details: makeDetails([]),
-            isError: true,
+            details: makeDetails([], true),
           };
         }
 
@@ -732,8 +740,7 @@ export default function (pi: ExtensionAPI) {
         if (parentSessionError) {
           return {
             content: [{ type: "text", text: parentSessionError }],
-            details: makeDetails([]),
-            isError: true,
+            details: makeDetails([], true),
           };
         }
 
@@ -759,8 +766,7 @@ Current stack: ${stackText}
 This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A).`,
                 },
               ],
-              details: makeDetails([]),
-              isError: true,
+              details: makeDetails([], true),
             };
           }
         }
@@ -771,8 +777,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         if (activeSessionError) {
           return {
             content: [{ type: "text", text: activeSessionError }],
-            details: makeDetails([]),
-            isError: true,
+            details: makeDetails([], true),
           };
         }
 
@@ -782,8 +787,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         if (lockResult.error) {
           return {
             content: [{ type: "text", text: lockResult.error }],
-            details: makeDetails([]),
-            isError: true,
+            details: makeDetails([], true),
           };
         }
 
@@ -804,8 +808,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
                   text: `Failed to inspect existing subagent sessions: ${message}`,
                 },
               ],
-              details: makeDetails([]),
-              isError: true,
+              details: makeDetails([], true),
             };
           }
 
@@ -820,8 +823,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
                     text: "Cannot run subagent calls: failed to snapshot current parent session context for calls requiring initialContext=\"parent\".",
                   },
                 ],
-                details: makeDetails([]),
-                isError: true,
+                details: makeDetails([], true),
               };
             }
             parentSessionSnapshotJsonl = snapshot;
@@ -936,8 +938,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
           text: formatCallsSummary(results),
         },
       ],
-      details: makeDetails(results),
-      isError: hasErrors || undefined,
+      details: makeDetails(results, hasErrors),
     };
   }
 }

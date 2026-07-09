@@ -99,10 +99,34 @@ test("extension lifecycle excludes untrusted project agents consistently", async
       ctx,
     );
 
+    assert.equal(result.details.kind, "pi-subagent");
+    assert.equal(result.details.failed, true);
     assert.equal(result.details.projectAgentsDir, null);
     assert.equal(result.details.results.length, 1);
     assert.equal(result.details.results[0].agentSource, "unknown");
     assert.match(result.content[0].text, /Unknown agent: "project-only"/);
+
+    const errorPatch = await harness.handlers.get("tool_result")[0](
+      {
+        toolName: "subagent",
+        content: result.content,
+        details: result.details,
+        isError: false,
+      },
+      ctx,
+    );
+    assert.deepEqual(errorPatch, { isError: true });
+
+    const successPatch = await harness.handlers.get("tool_result")[0](
+      {
+        toolName: "subagent",
+        content: [{ type: "text", text: "ok" }],
+        details: { kind: "pi-subagent", projectAgentsDir: null, results: [] },
+        isError: false,
+      },
+      ctx,
+    );
+    assert.equal(successPatch, undefined);
   } finally {
     if (previousConfigDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousConfigDir;

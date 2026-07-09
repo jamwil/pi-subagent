@@ -54,10 +54,12 @@ export interface SingleResult {
 	processError?: boolean;
 }
 
-/** Metadata attached to every tool result for rendering. */
+/** Metadata attached to every tool result for rendering and result middleware. */
 export interface SubagentDetails {
+	kind: "pi-subagent";
 	projectAgentsDir: string | null;
 	results: SingleResult[];
+	failed?: true;
 }
 
 /** A display-friendly representation of a message part. */
