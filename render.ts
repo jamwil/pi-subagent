@@ -3,7 +3,7 @@
  */
 
 import * as os from "node:os";
-import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { getProcessErrorText, getResultSummaryText } from "./runner-events.js";
 import {
@@ -64,7 +64,8 @@ function getResultPrompt(result: SingleResult & { task?: unknown }): string {
 	return "";
 }
 
-type ThemeFg = (color: string, text: string) => string;
+type ThemeFg = Theme["fg"];
+type ToolTheme = Pick<Theme, "fg" | "bold">;
 
 function formatToolCall(toolName: string, args: Record<string, unknown>, fg: ThemeFg): string {
 	const pathArg = (args.file_path || args.path || "...") as string;
@@ -176,7 +177,7 @@ function statusIcon(r: SingleResult, theme: { fg: ThemeFg }): string {
 // renderCall — shown while the tool is being invoked
 // ---------------------------------------------------------------------------
 
-export function renderCall(args: Record<string, any>, theme: { fg: ThemeFg; bold: (s: string) => string }): Text {
+export function renderCall(args: Record<string, any>, theme: ToolTheme): Text {
 	const calls = Array.isArray(args.calls) ? args.calls : [];
 	let text =
 		theme.fg("toolTitle", theme.bold("subagent ")) +
@@ -207,7 +208,7 @@ export function renderCall(args: Record<string, any>, theme: { fg: ThemeFg; bold
 export function renderResult(
 	result: { content: Array<{ type: string; text?: string }>; details?: unknown },
 	expanded: boolean,
-	theme: { fg: ThemeFg; bold: (s: string) => string },
+	theme: ToolTheme,
 ): Container | Text {
 	const details = result.details as SubagentDetails | undefined;
 	if (!details || details.results.length === 0) {
@@ -222,7 +223,7 @@ export function renderResult(
 
 function renderCallsExpanded(
 	details: SubagentDetails,
-	theme: { fg: ThemeFg; bold: (s: string) => string },
+	theme: ToolTheme,
 ): Container {
 	const mdTheme = getMarkdownTheme();
 	const container = new Container();
@@ -302,7 +303,7 @@ function renderCallsExpanded(
 
 function renderCallsCollapsed(
 	details: SubagentDetails,
-	theme: { fg: ThemeFg; bold: (s: string) => string },
+	theme: ToolTheme,
 ): Text {
 	const running = details.results.filter((r) => r.exitCode === -1).length;
 	const successCount = details.results.filter((r) => isResultSuccess(r)).length;
