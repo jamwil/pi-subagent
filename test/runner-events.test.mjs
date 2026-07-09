@@ -142,6 +142,21 @@ test("records agent settlement separately from low-level agent_end", () => {
   assert.equal(result.sawAgentSettled, true);
 });
 
+test("deeply nested assistant content becomes a process error instead of throwing", () => {
+  const result = makeResult();
+  let nested = {};
+  for (let index = 0; index < 20_000; index++) nested = { nested };
+  const message = {
+    role: "assistant",
+    content: [{ type: "toolCall", id: "deep", name: "test", arguments: nested }],
+    timestamp: 1,
+  };
+
+  assert.doesNotThrow(() => processPiEvent({ type: "message_end", message }, result));
+  assert.equal(result.processError, true);
+  assert.match(result.errorMessage, /safely capture/);
+});
+
 test("bounds retained assistant messages and reports capture truncation", () => {
   const result = makeResult();
   const oversized = {

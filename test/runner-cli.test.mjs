@@ -187,7 +187,7 @@ test("forwards exclude-tools values without consuming the parent prompt", () => 
 
 test("limits temporary project approval to the same child working directory", () => {
   assert.deepEqual(getInheritedProjectTrustArgs(true, true), ["--approve"]);
-  assert.deepEqual(getInheritedProjectTrustArgs(true, false), []);
+  assert.deepEqual(getInheritedProjectTrustArgs(true, false), ["--no-approve"]);
   assert.deepEqual(getInheritedProjectTrustArgs(false, true), ["--no-approve"]);
   assert.deepEqual(getInheritedProjectTrustArgs(false, false), ["--no-approve"]);
   assert.deepEqual(getInheritedProjectTrustArgs(undefined, true), []);

@@ -12,7 +12,6 @@ import * as path from "node:path";
 import {
   type ExtensionAPI,
   getAgentDir,
-  hasTrustRequiringProjectResources,
   ProjectTrustStore,
   SessionManager,
 } from "@earendil-works/pi-coding-agent";
@@ -241,7 +240,6 @@ function shouldIncludeProjectAgents(cwd: string, contextTrusted: boolean): boole
 
   const trustOverride = getProjectTrustOverrideFromArgv(process.argv);
   if (trustOverride !== null) return trustOverride;
-  if (hasTrustRequiringProjectResources(cwd)) return true;
 
   try {
     return new ProjectTrustStore(getAgentDir()).get(cwd) === true;
@@ -381,6 +379,10 @@ function makeDetailsFactory(projectAgentsDir: string | null) {
   });
 }
 
+export function resolveCallCwd(defaultCwd: string, rawCwd?: string): string {
+  return fs.realpathSync(path.resolve(defaultCwd, rawCwd ?? "."));
+}
+
 function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsResult {
   if (!Array.isArray(rawCalls)) {
     return { error: `Invalid subagent parameters: missing calls array.\n${formatSubagentUsageErrorExample()}` };
@@ -451,11 +453,16 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
         if (!fs.statSync(effectiveCwd).isDirectory()) {
           return { error: `calls[${index}].cwd is not a directory: ${effectiveCwd}` };
         }
+        effectiveCwd = resolveCallCwd(defaultCwd, call.cwd);
       } catch {
         return { error: `calls[${index}].cwd does not exist or is not accessible: ${effectiveCwd}` };
       }
     } else {
-      effectiveCwd = path.resolve(defaultCwd);
+      try {
+        effectiveCwd = resolveCallCwd(defaultCwd);
+      } catch {
+        return { error: `Parent cwd does not exist or is not accessible: ${path.resolve(defaultCwd)}` };
+      }
     }
 
     let sessionHandle: string | undefined;

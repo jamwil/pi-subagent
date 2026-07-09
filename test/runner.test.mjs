@@ -197,13 +197,14 @@ test("normalizeCompletedResult does not mask process-level errors on abort", () 
   assert.equal(isResultError(result), true);
 });
 
-test("normalizeCompletedResult preserves semantic completion when the process is aborted after agent_end", () => {
+test("normalizeCompletedResult preserves settled completion when teardown is aborted", () => {
   const result = makeResult({
     exitCode: 130,
     stopReason: "aborted",
     errorMessage: "Subagent was aborted.",
     stderr: "Subagent was aborted.",
     sawAgentEnd: true,
+    sawAgentSettled: true,
     messages: [
       {
         role: "assistant",
@@ -220,6 +221,27 @@ test("normalizeCompletedResult preserves semantic completion when the process is
   assert.equal(result.errorMessage, undefined);
   assert.equal(isResultSuccess(result), true);
   assert.equal(isResultError(result), false);
+});
+
+test("normalizeCompletedResult rejects aborted intermediate agent_end output", () => {
+  const result = makeResult({
+    exitCode: 130,
+    stopReason: "stop",
+    sawAgentEnd: true,
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Intermediate answer" }],
+        timestamp: 1,
+      },
+    ],
+  });
+
+  normalizeCompletedResult(result, true);
+
+  assert.equal(result.exitCode, 130);
+  assert.equal(result.stopReason, "aborted");
+  assert.equal(isResultError(result), true);
 });
 
 test("normalizeCompletedResult keeps aborts as errors without semantic completion", () => {
@@ -433,8 +455,9 @@ test("runAgent delivers CLI-like prompts verbatim through stdin", () => {
   fs.writeFileSync(
     harnessPath,
     `if (process.argv.includes("--mode")) {
-      let prompt = "";
-      for await (const chunk of process.stdin) prompt += chunk.toString();
+      const prompt = await new Promise((resolve) => {
+        process.stdin.once("data", (chunk) => resolve(JSON.parse(chunk.toString().trim()).message));
+      });
       const message = {
         role: "assistant",
         content: [{ type: "text", text: prompt }],
@@ -447,7 +470,7 @@ test("runAgent delivers CLI-like prompts verbatim through stdin", () => {
     } else {
       const { runAgent } = await import(${JSON.stringify(moduleUrl)});
       const results = [];
-      for (const prompt of ["--approve", "--help", "@/tmp/secret", "-leading"]) {
+      for (const prompt of ["--approve", "--help", "@/tmp/secret", "-leading", "  padded prompt  \\n"]) {
         results.push(await runAgent({
           cwd: process.cwd(),
           agents: [{ name: "echo", description: "echo", source: "user", systemPrompt: "" }],
@@ -476,7 +499,7 @@ test("runAgent delivers CLI-like prompts verbatim through stdin", () => {
 
     assert.deepEqual(
       results.map((result) => result.messages.at(-1).content[0].text),
-      ["--approve", "--help", "@/tmp/secret", "-leading"],
+      ["--approve", "--help", "@/tmp/secret", "-leading", "  padded prompt  \n"],
     );
     assert.equal(results.every((result) => result.exitCode === 0), true);
   } finally {
@@ -546,7 +569,7 @@ test(
       `import fs from "node:fs";
       import { spawn } from "node:child_process";
       if (process.argv.includes("--mode")) {
-        spawn(process.execPath, ["-e", ${JSON.stringify(`setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "alive"), 600)`) }], { stdio: "ignore" });
+        spawn(process.execPath, ["-e", ${JSON.stringify(`process.on("SIGTERM", () => {}); setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "alive"), 1000)`) }], { stdio: "ignore" });
         setInterval(() => {}, 1000);
       } else {
         const { runAgent } = await import(${JSON.stringify(moduleUrl)});
@@ -564,7 +587,7 @@ test(
           timeoutMs: 100,
           makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
         });
-        await new Promise((resolve) => setTimeout(resolve, 900));
+        await new Promise((resolve) => setTimeout(resolve, 1300));
         process.stdout.write(JSON.stringify({ result, markerExists: fs.existsSync(${JSON.stringify(markerPath)}) }));
       }`,
     );
@@ -606,20 +629,19 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
 
     assert.deepEqual(
       buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined),
-      ["--mode", "json", "-p", "--no-session"],
+      ["--mode", "rpc", "--no-session"],
     );
 
     assert.deepEqual(
       buildPiArgs(agent, null, "hello", "parent", "/tmp/parent.jsonl", undefined, undefined),
-      ["--mode", "json", "-p", "--session", "/tmp/parent.jsonl"],
+      ["--mode", "rpc", "--session", "/tmp/parent.jsonl"],
     );
 
     assert.deepEqual(
       buildPiArgs(agent, null, "hello", "parent", "/tmp/parent.jsonl", session, undefined),
       [
         "--mode",
-        "json",
-        "-p",
+        "rpc",
         "--fork",
         "/tmp/parent.jsonl",
         "--session-id",
@@ -639,7 +661,7 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
         { ...session, created: false, initialContextApplied: null },
         undefined,
       ),
-      ["--mode", "json", "-p", "--session-id", "subagent.abc123"],
+      ["--mode", "rpc", "--session-id", "subagent.abc123"],
     );
 
     assert.deepEqual(
@@ -652,17 +674,17 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
         undefined,
         undefined,
       ),
-      ["--mode", "json", "-p", "--no-session", "--no-tools"],
+      ["--mode", "rpc", "--no-session", "--no-tools"],
     );
 
     assert.deepEqual(
       buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined),
-      ["--mode", "json", "-p", "--no-session", "--model", "agent-model"],
+      ["--mode", "rpc", "--no-session", "--model", "agent-model"],
     );
 
     assert.deepEqual(
       buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, "call-model"),
-      ["--mode", "json", "-p", "--no-session", "--model", "call-model"],
+      ["--mode", "rpc", "--no-session", "--model", "call-model"],
     );
   } finally {
     cleanup();

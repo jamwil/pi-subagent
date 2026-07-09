@@ -27,7 +27,7 @@ import {
 } from "./types.js";
 
 const isWindows = process.platform === "win32";
-const SIGKILL_TIMEOUT_MS = 5000;
+const SIGKILL_TIMEOUT_MS = 500;
 const TERMINATION_SETTLE_TIMEOUT_MS = SIGKILL_TIMEOUT_MS + 1000;
 const AGENT_END_GRACE_MS = 250;
 const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
@@ -173,11 +173,10 @@ export function buildPiArgs(
   );
   const args: string[] = [
     "--mode",
-    "json",
+    "rpc",
     ...inheritedCliArgs.extensionArgs,
     ...inheritedCliArgs.alwaysProxy,
     ...projectTrustArgs,
-    "-p",
   ];
 
   if (session && persistentSessionDir && !inheritedCliArgs.sessionDir) {
@@ -422,9 +421,9 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       proc.stdin.on("error", () => {
         /* ignore broken pipe on fast exits */
       });
-      // Stdin is Pi's unambiguous non-interactive prompt channel. Passing the
-      // prompt in argv would reinterpret leading "-" or "@" as CLI syntax.
-      proc.stdin.end(prompt);
+      // RPC preserves prompt bytes exactly. Print-mode stdin trims leading and
+      // trailing whitespace, while argv reinterprets leading "-" and "@".
+      proc.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
 
       let buffer = "";
       let didClose = false;
@@ -469,6 +468,16 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         }
       };
 
+      const isProcessGroupAlive = () => {
+        if (isWindows || proc.pid === undefined) return false;
+        try {
+          process.kill(-proc.pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
       const signalProcessTree = (signalName: NodeJS.Signals) => {
         if (proc.pid === undefined) return;
         try {
@@ -498,19 +507,17 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         } else {
           signalProcessTree("SIGTERM");
           sigkillTimer = setTimeout(() => {
-            if (!didClose) signalProcessTree("SIGKILL");
+            signalProcessTree("SIGKILL");
           }, SIGKILL_TIMEOUT_MS);
-          sigkillTimer.unref();
         }
 
         terminationSettleTimer = setTimeout(() => {
-          if (didClose || settled) return;
+          if (settled) return;
           proc.stdout.removeListener("data", onStdoutData);
           proc.stderr.removeListener("data", onStderrData);
           if (forcedExitCode === undefined) forcedExitCode = wasAborted ? 130 : 1;
           finish(forcedExitCode);
         }, TERMINATION_SETTLE_TIMEOUT_MS);
-        terminationSettleTimer.unref();
       };
 
       if (timeoutMs !== undefined) {
@@ -566,6 +573,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
 
       const maybeFinishFromSettlement = () => {
         if (!result.sawAgentSettled || didClose || settled) return;
+        if (!proc.stdin.destroyed) proc.stdin.end();
         if (session) {
           // Named sessions persist child history. Let Pi exit naturally so its
           // session file is fully flushed before the parent reports completion.
@@ -635,8 +643,13 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
           if (!result.stderr.includes(signalFailure.message)) {
             appendStderr(`${result.stderr ? "\n" : ""}${signalFailure.message}`);
           }
+          forcedExitCode = signalFailure.exitCode;
+          terminateChild();
         }
 
+        if (terminationStarted && !isWindows && isProcessGroupAlive()) {
+          return;
+        }
         finish(code ?? signalFailure?.exitCode ?? 1);
       });
 

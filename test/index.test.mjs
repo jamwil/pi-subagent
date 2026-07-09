@@ -7,7 +7,10 @@ import { createJiti } from "jiti";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 
 const jiti = createJiti(import.meta.url);
-const { default: registerSubagentExtension } = await jiti.import("../index.ts");
+const {
+  default: registerSubagentExtension,
+  resolveCallCwd,
+} = await jiti.import("../index.ts");
 
 function createPiHarness() {
   const handlers = new Map();
@@ -58,6 +61,21 @@ function createContext(cwd, trusted) {
     },
   };
 }
+
+test("canonicalizes symlinked per-call working directories", {
+  skip: process.platform === "win32",
+}, () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-cwd-"));
+  const physical = path.join(tmpDir, "physical");
+  const alias = path.join(tmpDir, "alias");
+  fs.mkdirSync(physical);
+  fs.symlinkSync(physical, alias, "dir");
+  try {
+    assert.equal(resolveCallCwd(tmpDir, "alias"), fs.realpathSync(physical));
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
 
 test("subagent schema uses a Google-compatible initialContext enum", () => {
   const harness = createPiHarness();

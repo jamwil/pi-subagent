@@ -124,7 +124,12 @@ export function normalizeCompletedResult(result: SingleResult, wasAborted: boole
 	const hasTerminalOutput = Boolean(result.sawAgentEnd) && hasFinalAssistantOutput(result);
 
 	if (wasAborted) {
-		if (hasTerminalOutput && !result.processError && result.stopReason !== "error") {
+		if (
+			result.sawAgentSettled &&
+			hasTerminalOutput &&
+			!result.processError &&
+			result.stopReason !== "error"
+		) {
 			result.exitCode = 0;
 			if (result.stopReason === "aborted") result.stopReason = undefined;
 			if (result.errorMessage === "Subagent was aborted.") {

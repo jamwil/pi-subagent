@@ -77,7 +77,7 @@ Subagents are defined as Markdown files with YAML frontmatter.
 
 **Project agents:** `.pi/agents/*.md`.
 
-Project agents win on name conflicts, but only after explicit project trust. Saved Pi trust decisions, `--approve`, and Pi's normal trust flow for other project resources enable them; Pi's implicit trust for a repository containing only `.pi/agents` does not. They are repo-controlled configuration and execute like user agents.
+Project agents win on name conflicts, but only after explicit project trust recorded in Pi's trust store or supplied with `--approve`. Implicit or session-only trust does not enable them. They are repo-controlled configuration and execute like user agents.
 
 #### Starter Agent
 
@@ -100,6 +100,7 @@ A good default for fast codebase reconnaissance. It prefers named sessions becau
 ---
 name: explore
 description: Codebase exploration specialist for focused searches and evidence-backed summaries.
+tools: read,grep,find,ls
 sessionPreference: persistent
 sessionHint: Prefer a topic-specific named session for iterative codebase exploration, e.g. session="explore-auth". Use ephemeral calls for one-off or parallel independent searches.
 ---

@@ -18,33 +18,22 @@ function getSeenMessageSignatures(result) {
   return result.__seenMessageSignatures;
 }
 
-function stableStringify(value) {
-  if (value === null || typeof value !== "object") {
-    return JSON.stringify(value);
-  }
-
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
-  }
-
-  const entries = Object.entries(value).sort(([a], [b]) => a.localeCompare(b));
-  return `{${entries
-    .map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`)
-    .join(",")}}`;
-}
-
 function serializeMessage(message) {
-  const serialized = stableStringify(message);
-  return {
-    bytes: Buffer.byteLength(serialized, "utf8"),
-    signature: createHash("sha256").update(serialized).digest("hex"),
-  };
+  try {
+    const serialized = JSON.stringify(message);
+    return {
+      bytes: Buffer.byteLength(serialized, "utf8"),
+      signature: createHash("sha256").update(serialized).digest("hex"),
+    };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 function getCapturedMessageState(result) {
   if (!Object.prototype.hasOwnProperty.call(result, "__capturedMessageState")) {
     Object.defineProperty(result, "__capturedMessageState", {
-      value: { sizes: [], totalBytes: 0 },
+      value: { signatures: [], sizes: [], totalBytes: 0 },
       enumerable: false,
       configurable: false,
       writable: false,
@@ -65,7 +54,15 @@ function addAssistantMessage(result, message) {
 
   updateAssistantMetadata(result, message);
 
-  const { signature, bytes } = serializeMessage(message);
+  const serialized = serializeMessage(message);
+  if (serialized.error) {
+    result.captureTruncated = true;
+    result.processError = true;
+    result.stopReason = "error";
+    result.errorMessage = `Could not safely capture a subagent message: ${serialized.error}`;
+    return false;
+  }
+  const { signature, bytes } = serialized;
   const seen = getSeenMessageSignatures(result);
   if (seen.has(signature)) return false;
   seen.add(signature);
@@ -77,6 +74,8 @@ function addAssistantMessage(result, message) {
   ) {
     result.messages.shift();
     capture.totalBytes -= capture.sizes.shift() ?? 0;
+    const evictedSignature = capture.signatures.shift();
+    if (evictedSignature) seen.delete(evictedSignature);
     result.captureTruncated = true;
   }
   if (bytes > MAX_CAPTURED_MESSAGE_BYTES) {
@@ -85,6 +84,7 @@ function addAssistantMessage(result, message) {
   }
 
   result.messages.push(message);
+  capture.signatures.push(signature);
   capture.sizes.push(bytes);
   capture.totalBytes += bytes;
 
@@ -157,6 +157,16 @@ export function processPiEvent(event, result) {
 
     case "agent_settled":
       result.sawAgentSettled = true;
+      return false;
+
+    case "response":
+      if (event.success === false) {
+        const message = typeof event.error === "string" ? event.error : "Subagent RPC prompt failed.";
+        result.processError = true;
+        result.stopReason = "error";
+        result.errorMessage = message;
+        result.sawAgentSettled = true;
+      }
       return false;
 
     default:
