@@ -370,6 +370,8 @@ If any call fails, the tool result is marked as an error while still returning e
 Unknown agent: "testing-audit".
 ```
 
+Model-facing output is limited to 50KB or 2000 lines. When a result exceeds either limit, every call's status remains visible, full details remain available in the expanded TUI, and the complete summary is written to a mode-`0600` temporary file for the lifetime of the parent Pi session.
+
 Full session metadata, including generated session ID, effective cwd, creation status, and applied initial context, is available in the tool result details and TUI expanded view.
 
 ### Delegation Guards

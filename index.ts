@@ -20,9 +20,9 @@ import {
   formatSubagentUsageErrorExample,
   getCallFieldSchemaDescription,
 } from "./contract.js";
+import { formatCallsSummary, writeOutputArtifact } from "./output.js";
 import { renderCall, renderResult } from "./render.js";
 import { ensureDefaultSessionDir, getDefaultSessionDirPath } from "./session-paths.js";
-import { getResultSummaryText } from "./runner-events.js";
 import { mapConcurrent, runAgent } from "./runner.js";
 import { acquireSessionLocks, releaseSessionLocks, type SessionLockTarget } from "./session-lock.js";
 import {
@@ -33,7 +33,6 @@ import {
   DEFAULT_INITIAL_CONTEXT,
   emptyUsage,
   isResultError,
-  isResultSuccess,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -601,21 +600,6 @@ function makePlaceholderResult(call: NormalizedCall): SingleResult {
   };
 }
 
-function formatResultLabel(result: SingleResult, fallbackIndex: number): string {
-  const displayIndex = (result.callIndex ?? fallbackIndex) + 1;
-  const sessionText = result.session ? ` session=${oneLine(result.session.handle)}` : "";
-  return `${displayIndex}: ${result.agent}${sessionText}`;
-}
-
-function formatCallsSummary(results: SingleResult[]): string {
-  const successCount = results.filter((r) => isResultSuccess(r)).length;
-  const summaries = results.map((r, index) => {
-    const status = isResultError(r) ? "failed" : "completed";
-    return `[${formatResultLabel(r, index)}] ${status}:\n${getResultSummaryText(r)}`;
-  });
-  return `${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n")}`;
-}
-
 // ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
@@ -635,6 +619,29 @@ export default function (pi: ExtensionAPI) {
   const { currentDepth, maxDepth, canDelegate, ancestorAgentStack, preventCycles } =
     depthConfig;
   const activeSessionIds = new Set<string>();
+  const outputArtifactDirs = new Set<string>();
+
+  const saveFullOutput = (content: string): string | null => {
+    try {
+      const artifact = writeOutputArtifact(content);
+      outputArtifactDirs.add(artifact.dir);
+      return artifact.filePath;
+    } catch (error) {
+      console.warn(`[pi-subagent] Could not save truncated output: ${String(error)}`);
+      return null;
+    }
+  };
+
+  pi.on("session_shutdown", () => {
+    for (const dir of outputArtifactDirs) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // Best-effort cleanup; the OS temp directory remains the fallback lifecycle.
+      }
+    }
+    outputArtifactDirs.clear();
+  });
 
   let discoveredAgents: AgentConfig[] = [];
 
@@ -931,11 +938,12 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
     }
 
     const hasErrors = results.some((r) => isResultError(r));
+    const summary = formatCallsSummary(results, saveFullOutput);
     return {
       content: [
         {
           type: "text" as const,
-          text: formatCallsSummary(results),
+          text: summary.text,
         },
       ],
       details: makeDetails(results, hasErrors),

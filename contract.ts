@@ -180,6 +180,7 @@ export function formatSubagentToolDescription(): string {
     formatDelegationRules(),
     "",
     "Multiple calls may run concurrently.",
+    "Model-facing output is capped at Pi's standard 50KB/2000-line limits; full truncated output is saved to a temporary file for the active session.",
     "",
     'Example: { calls: [{ agent: "review", prompt: "Review this diff", model: "anthropic/claude-sonnet-4", session: "api-review", initialContext: "parent" }] }',
   ].join("\n");
