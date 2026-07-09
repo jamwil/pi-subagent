@@ -116,11 +116,12 @@ export function getFinalAssistantText(messages) {
       continue;
     }
 
-    for (const part of message.content) {
-      if (part?.type === "text" && typeof part.text === "string" && part.text.length > 0) {
-        return part.text;
-      }
-    }
+    const text = message.content
+      .filter((part) => part?.type === "text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .filter((partText) => partText.length > 0)
+      .join("");
+    if (text) return text;
   }
 
   return "";

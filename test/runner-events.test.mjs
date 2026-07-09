@@ -87,6 +87,49 @@ test("deduplicates assistant messages repeated across message_end, turn_end, and
   assert.equal(result.sawAgentEnd, true);
 });
 
+test("returns every text block from the latest assistant message containing text", () => {
+  const result = makeResult();
+  result.messages.push(
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "Earlier" }],
+      timestamp: 1,
+    },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "First section\n" },
+        { type: "thinking", thinking: "hidden" },
+        { type: "toolCall", id: "call-1", name: "read", arguments: {} },
+        { type: "text", text: "" },
+        { type: "text", text: "Final conclusion" },
+      ],
+      timestamp: 2,
+    },
+  );
+
+  assert.equal(getFinalAssistantText(result.messages), "First section\nFinal conclusion");
+  assert.equal(getResultSummaryText(result), "First section\nFinal conclusion");
+});
+
+test("falls back to the latest assistant message that contains text", () => {
+  const result = makeResult();
+  result.messages.push(
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "Complete answer" }],
+      timestamp: 1,
+    },
+    {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "unfinished" }],
+      timestamp: 2,
+    },
+  );
+
+  assert.equal(getFinalAssistantText(result.messages), "Complete answer");
+});
+
 test("non-zero exit code does not hide the final assistant text", () => {
   const result = makeResult();
   result.exitCode = 1;
