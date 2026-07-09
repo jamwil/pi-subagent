@@ -10,7 +10,7 @@
  *   - Project agents: .pi/agents/*.md  (walks up from cwd)
  */
 
-import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -128,11 +128,11 @@ export function getUserAgentsDir(): string {
 	return path.join(configDir, "agents");
 }
 
-/** Walk up from `cwd` looking for a `.pi/agents` directory. */
+/** Walk up from `cwd` looking for a project-local agents directory. */
 function findNearestProjectAgentsDir(cwd: string): string | null {
 	let dir = cwd;
 	while (true) {
-		const candidate = path.join(dir, ".pi", "agents");
+		const candidate = path.join(dir, CONFIG_DIR_NAME, "agents");
 		if (isDirectory(candidate)) return candidate;
 		const parent = path.dirname(dir);
 		if (parent === dir) return null;
@@ -254,12 +254,19 @@ function writeStarterAgentFile(filePath: string): void {
  *
  * Precedence is: user < project.
  */
-export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
+export function discoverAgents(
+	cwd: string,
+	scope: AgentScope,
+	includeProjectAgents: boolean,
+): AgentDiscoveryResult {
 	const userAgentsDir = getUserAgentsDir();
-	const projectAgentsDir = findNearestProjectAgentsDir(cwd);
+	const projectAgentsDir = includeProjectAgents ? findNearestProjectAgentsDir(cwd) : null;
 
 	const userAgents = scope === "project" ? [] : loadAgentsFromDir(userAgentsDir, "user");
-	const projectAgents = scope === "user" || !projectAgentsDir ? [] : loadAgentsFromDir(projectAgentsDir, "project");
+	const projectAgents =
+		!includeProjectAgents || scope === "user" || !projectAgentsDir
+			? []
+			: loadAgentsFromDir(projectAgentsDir, "project");
 
 	if (scope === "user") {
 		return { agents: userAgents, projectAgentsDir };
@@ -280,8 +287,11 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
  * starter will be recreated on the next discovery that needs runnable agents.
  * Existing files are never overwritten.
  */
-export function discoverAgentsWithStarter(cwd: string): StarterAgentDiscoveryResult {
-	const initial = discoverAgents(cwd, "both");
+export function discoverAgentsWithStarter(
+	cwd: string,
+	includeProjectAgents: boolean,
+): StarterAgentDiscoveryResult {
+	const initial = discoverAgents(cwd, "both", includeProjectAgents);
 	if (initial.agents.length > 0) {
 		return { discovery: initial, createdAgentPath: null };
 	}
@@ -292,7 +302,9 @@ export function discoverAgentsWithStarter(cwd: string): StarterAgentDiscoveryRes
 		fs.mkdirSync(userAgentsDir, { recursive: true });
 
 		for (let attempt = 0; attempt < 100; attempt++) {
-			const latest = attempt === 0 ? initial : discoverAgents(cwd, "both");
+			const latest = attempt === 0
+				? initial
+				: discoverAgents(cwd, "both", includeProjectAgents);
 			if (latest.agents.length > 0) {
 				return { discovery: latest, createdAgentPath: null };
 			}
@@ -301,7 +313,7 @@ export function discoverAgentsWithStarter(cwd: string): StarterAgentDiscoveryRes
 			try {
 				writeStarterAgentFile(filePath);
 				return {
-					discovery: discoverAgents(cwd, "both"),
+					discovery: discoverAgents(cwd, "both", includeProjectAgents),
 					createdAgentPath: filePath,
 				};
 			} catch (err) {

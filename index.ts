@@ -639,7 +639,10 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     if (!canDelegate) return;
 
-    const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
+    const starterDiscovery = discoverAgentsWithStarter(
+      ctx.cwd,
+      ctx.isProjectTrusted(),
+    );
     const discovery = starterDiscovery.discovery;
     discoveredAgents = discovery.agents;
 
@@ -692,7 +695,10 @@ export default function (pi: ExtensionAPI) {
       parameters: SubagentParams,
 
       async execute(_toolCallId, params, signal, onUpdate, ctx) {
-        const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
+        const starterDiscovery = discoverAgentsWithStarter(
+          ctx.cwd,
+          ctx.isProjectTrusted(),
+        );
         const discovery = starterDiscovery.discovery;
         const { agents } = discovery;
         const makeDetails = makeDetailsFactory(discovery.projectAgentsDir);
