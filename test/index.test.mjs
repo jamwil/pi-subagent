@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createJiti } from "jiti";
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 
 const jiti = createJiti(import.meta.url);
 const { default: registerSubagentExtension } = await jiti.import("../index.ts");
@@ -73,6 +74,58 @@ test("subagent schema uses a Google-compatible initialContext enum", () => {
   assert.equal(timeout.type, "integer");
   assert.equal(timeout.minimum, 1);
   assert.equal(timeout.maximum > 1, true);
+});
+
+test("implicit Pi trust does not enable project-only agents", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-index-"));
+  const configDir = path.join(tmpDir, "config");
+  const projectDir = path.join(tmpDir, "project");
+  const previousConfigDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = configDir;
+  writeAgent(path.join(projectDir, ".pi", "agents"), "project-only");
+
+  try {
+    const harness = createPiHarness();
+    const ctx = createContext(projectDir, true);
+    await harness.handlers.get("session_start")[0]({ reason: "startup" }, ctx);
+    const promptPatch = await harness.handlers.get("before_agent_start")[0](
+      { systemPrompt: "base" },
+      ctx,
+    );
+
+    assert.match(promptPatch.systemPrompt, /\*\*explore\*\* \(user\)/);
+    assert.doesNotMatch(promptPatch.systemPrompt, /project-only/);
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousConfigDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("saved project trust enables project-only agents", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-index-"));
+  const configDir = path.join(tmpDir, "config");
+  const projectDir = path.join(tmpDir, "project");
+  const previousConfigDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = configDir;
+  writeAgent(path.join(projectDir, ".pi", "agents"), "project-only");
+  new ProjectTrustStore(configDir).set(projectDir, true);
+
+  try {
+    const harness = createPiHarness();
+    const ctx = createContext(projectDir, true);
+    await harness.handlers.get("session_start")[0]({ reason: "startup" }, ctx);
+    const promptPatch = await harness.handlers.get("before_agent_start")[0](
+      { systemPrompt: "base" },
+      ctx,
+    );
+
+    assert.match(promptPatch.systemPrompt, /\*\*project-only\*\* \(project\)/);
+  } finally {
+    if (previousConfigDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousConfigDir;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test("extension lifecycle excludes untrusted project agents consistently", async () => {

@@ -9,7 +9,13 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+  type ExtensionAPI,
+  getAgentDir,
+  hasTrustRequiringProjectResources,
+  ProjectTrustStore,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { type AgentConfig, STARTER_AGENT_NAME, discoverAgentsWithStarter } from "./agents.js";
@@ -207,6 +213,30 @@ function getMaxDepthFlagFromArgv(argv: string[]): string | null {
     }
   }
   return null;
+}
+
+function getProjectTrustOverrideFromArgv(argv: string[]): boolean | null {
+  let override: boolean | null = null;
+  for (let i = 2; i < argv.length; i++) {
+    if (argv[i] === "--approve" || argv[i] === "-a") override = true;
+    if (argv[i] === "--no-approve" || argv[i] === "-na") override = false;
+  }
+  return override;
+}
+
+function shouldIncludeProjectAgents(cwd: string, contextTrusted: boolean): boolean {
+  if (!contextTrusted) return false;
+
+  const trustOverride = getProjectTrustOverrideFromArgv(process.argv);
+  if (trustOverride !== null) return trustOverride;
+  if (hasTrustRequiringProjectResources(cwd)) return true;
+
+  try {
+    return new ProjectTrustStore(getAgentDir()).get(cwd) === true;
+  } catch (error) {
+    console.warn(`[pi-subagent] Could not verify project trust; project agents are disabled: ${String(error)}`);
+    return false;
+  }
 }
 
 function getPreventCyclesFlagFromArgv(
@@ -676,7 +706,7 @@ export default function (pi: ExtensionAPI) {
 
     const starterDiscovery = discoverAgentsWithStarter(
       ctx.cwd,
-      ctx.isProjectTrusted(),
+      shouldIncludeProjectAgents(ctx.cwd, ctx.isProjectTrusted()),
     );
     const discovery = starterDiscovery.discovery;
     discoveredAgents = discovery.agents;
@@ -740,7 +770,7 @@ export default function (pi: ExtensionAPI) {
       async execute(_toolCallId, params, signal, onUpdate, ctx) {
         const starterDiscovery = discoverAgentsWithStarter(
           ctx.cwd,
-          ctx.isProjectTrusted(),
+          shouldIncludeProjectAgents(ctx.cwd, ctx.isProjectTrusted()),
         );
         const discovery = starterDiscovery.discovery;
         const { agents } = discovery;

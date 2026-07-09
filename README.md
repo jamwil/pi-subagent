@@ -77,7 +77,7 @@ Subagents are defined as Markdown files with YAML frontmatter.
 
 **Project agents:** `.pi/agents/*.md`.
 
-Project agents win on name conflicts. They are repo-controlled configuration and are discovered, advertised to the main agent, and executed like user agents. Use project agents only in repositories you trust.
+Project agents win on name conflicts, but only after explicit project trust. Saved Pi trust decisions, `--approve`, and Pi's normal trust flow for other project resources enable them; Pi's implicit trust for a repository containing only `.pi/agents` does not. They are repo-controlled configuration and execute like user agents.
 
 #### Starter Agent
 
