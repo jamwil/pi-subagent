@@ -43,6 +43,7 @@ export interface SingleResult {
 	exitCode: number;
 	messages: Message[];
 	stderr: string;
+	stderrTruncated?: boolean;
 	usage: UsageStats;
 	model?: string;
 	stopReason?: string;
@@ -51,6 +52,8 @@ export interface SingleResult {
 	sawAgentSettled?: boolean;
 	/** Immediately pending failed-tool text for terminal-status attribution. */
 	pendingToolError?: string;
+	/** Older or oversized assistant messages were omitted to bound memory. */
+	captureTruncated?: boolean;
 	/** Process-level failures that should not be normalized away by semantic assistant completion. */
 	processError?: boolean;
 }
@@ -106,8 +109,7 @@ export function hasSemanticCompletion(
 export function isResultSuccess(r: SingleResult): boolean {
 	if (r.exitCode === -1) return false;
 	if (r.processError) return false;
-	if (hasSemanticCompletion(r)) return true;
-	return r.exitCode === 0 && r.stopReason !== "error" && r.stopReason !== "aborted";
+	return hasSemanticCompletion(r);
 }
 
 /** Whether a result represents an error. */
@@ -141,6 +143,17 @@ export function normalizeCompletedResult(result: SingleResult, wasAborted: boole
 			if (!result.stderr.trim()) result.stderr = "Subagent was aborted.";
 		}
 		return result;
+	}
+
+	if (result.exitCode === 0 && !hasSemanticSuccess) {
+		result.exitCode = 1;
+		if (!result.stopReason) result.stopReason = "error";
+		if (!result.errorMessage) {
+			result.errorMessage = result.sawAgentEnd
+				? "Subagent completed without final assistant output."
+				: "Subagent exited without completing an agent run.";
+		}
+		if (!result.stderr.trim()) result.stderr = result.errorMessage;
 	}
 
 	if (result.exitCode > 0) {

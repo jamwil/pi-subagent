@@ -142,6 +142,21 @@ test("records agent settlement separately from low-level agent_end", () => {
   assert.equal(result.sawAgentSettled, true);
 });
 
+test("bounds retained assistant messages and reports capture truncation", () => {
+  const result = makeResult();
+  const oversized = {
+    role: "assistant",
+    content: [{ type: "text", text: "x".repeat(5 * 1024 * 1024) }],
+    timestamp: 1,
+  };
+
+  processPiEvent({ type: "message_end", message: oversized }, result);
+
+  assert.equal(result.messages.length, 0);
+  assert.equal(result.captureTruncated, true);
+  assert.match(getResultSummaryText(result), /capture limit/);
+});
+
 test("non-zero exit code does not hide the final assistant text", () => {
   const result = makeResult();
   result.exitCode = 1;

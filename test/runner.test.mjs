@@ -12,6 +12,10 @@ function createTestableRunnerModule() {
   const modulePath = path.join(tmpDir, "runner.testable.ts");
   const source = fs
     .readFileSync(path.join(process.cwd(), "runner.ts"), "utf-8")
+    .replace(
+      'from "@earendil-works/pi-coding-agent"',
+      `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js")).href)}`,
+    )
     .replace('from "./runner-cli.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "runner-cli.js")).href)}`)
     .replace('from "./runner-events.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "runner-events.js")).href)}`)
     .replace('from "./types.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "types.ts")).href)}`);
@@ -231,6 +235,17 @@ test("normalizeCompletedResult keeps aborts as errors without semantic completio
   assert.equal(result.errorMessage, "Subagent was aborted.");
   assert.equal(result.stderr, "Subagent was aborted.");
   assert.equal(isResultSuccess(result), false);
+  assert.equal(isResultError(result), true);
+});
+
+test("clean process exit without agent completion is a failure", () => {
+  const result = makeResult({ exitCode: 0 });
+
+  normalizeCompletedResult(result, false);
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stopReason, "error");
+  assert.match(result.errorMessage, /without completing an agent run/);
   assert.equal(isResultError(result), true);
 });
 

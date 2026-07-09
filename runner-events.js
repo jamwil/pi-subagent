@@ -2,6 +2,10 @@
  * Helpers for parsing Pi JSON mode events and summarizing subagent results.
  */
 
+import { createHash } from "node:crypto";
+
+const MAX_CAPTURED_MESSAGE_BYTES = 5 * 1024 * 1024;
+
 function getSeenMessageSignatures(result) {
   if (!Object.prototype.hasOwnProperty.call(result, "__seenMessageSignatures")) {
     Object.defineProperty(result, "__seenMessageSignatures", {
@@ -29,8 +33,24 @@ function stableStringify(value) {
     .join(",")}}`;
 }
 
-function getMessageSignature(message) {
-  return stableStringify(message);
+function serializeMessage(message) {
+  const serialized = stableStringify(message);
+  return {
+    bytes: Buffer.byteLength(serialized, "utf8"),
+    signature: createHash("sha256").update(serialized).digest("hex"),
+  };
+}
+
+function getCapturedMessageState(result) {
+  if (!Object.prototype.hasOwnProperty.call(result, "__capturedMessageState")) {
+    Object.defineProperty(result, "__capturedMessageState", {
+      value: { sizes: [], totalBytes: 0 },
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
+  }
+  return result.__capturedMessageState;
 }
 
 function updateAssistantMetadata(result, message) {
@@ -45,12 +65,28 @@ function addAssistantMessage(result, message) {
 
   updateAssistantMetadata(result, message);
 
-  const signature = getMessageSignature(message);
+  const { signature, bytes } = serializeMessage(message);
   const seen = getSeenMessageSignatures(result);
   if (seen.has(signature)) return false;
   seen.add(signature);
 
+  const capture = getCapturedMessageState(result);
+  while (
+    result.messages.length > 0 &&
+    capture.totalBytes + bytes > MAX_CAPTURED_MESSAGE_BYTES
+  ) {
+    result.messages.shift();
+    capture.totalBytes -= capture.sizes.shift() ?? 0;
+    result.captureTruncated = true;
+  }
+  if (bytes > MAX_CAPTURED_MESSAGE_BYTES) {
+    result.captureTruncated = true;
+    return false;
+  }
+
   result.messages.push(message);
+  capture.sizes.push(bytes);
+  capture.totalBytes += bytes;
 
   result.usage.turns++;
   const usage = message.usage;
@@ -186,9 +222,13 @@ export function getResultSummaryText(result) {
       ? `Subagent ${result.stopReason}: ${result.errorMessage.trim()}`
       : "";
   const errorText = processErrorText || terminalErrorText;
-  if (finalText && errorText) return `${finalText}\n\n${errorText}`;
+  const captureText = result?.captureTruncated
+    ? "[Earlier or oversized subagent messages were omitted at the capture limit.]"
+    : "";
+  const suffix = [errorText, captureText].filter(Boolean).join("\n\n");
+  if (finalText && suffix) return `${finalText}\n\n${suffix}`;
   if (finalText) return finalText;
-  if (errorText) return errorText;
+  if (suffix) return suffix;
 
   if (typeof result?.errorMessage === "string" && result.errorMessage.trim()) {
     return result.errorMessage.trim();

@@ -9,6 +9,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import {
+  DEFAULT_MAX_BYTES,
+  truncateTail,
+} from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
 import { getInheritedProjectTrustArgs, parseInheritedCliArgs } from "./runner-cli.js";
 import { processPiJsonLine } from "./runner-events.js";
@@ -33,6 +37,8 @@ const SUBAGENT_PREVENT_CYCLES_ENV = "PI_SUBAGENT_PREVENT_CYCLES";
 const SUBAGENT_TEMP_PARENT_SESSION_ENV = "PI_SUBAGENT_TEMP_PARENT_SESSION";
 const PI_OFFLINE_ENV = "PI_OFFLINE";
 const PERSISTENT_SESSION_EXIT_TIMEOUT_MS = 30_000;
+const MAX_JSON_LINE_BYTES = 5 * 1024 * 1024;
+const MAX_STDERR_BYTES = DEFAULT_MAX_BYTES;
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
@@ -432,6 +438,16 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       let terminationStarted = false;
       let forcedExitCode: number | undefined;
 
+      const appendStderr = (text: string) => {
+        const combined = `${result.stderr}${text}`;
+        const truncation = truncateTail(combined, {
+          maxBytes: MAX_STDERR_BYTES,
+          maxLines: Number.MAX_SAFE_INTEGER,
+        });
+        result.stderr = truncation.content;
+        if (truncation.truncated) result.stderrTruncated = true;
+      };
+
       const clearSemanticCompletionTimer = () => {
         if (semanticCompletionTimer) {
           clearTimeout(semanticCompletionTimer);
@@ -505,7 +521,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
           result.stopReason = "error";
           result.errorMessage = `Subagent exceeded its configured ${timeoutSeconds}s run timeout.`;
           if (!result.stderr.includes(result.errorMessage)) {
-            result.stderr += `${result.stderr ? "\n" : ""}${result.errorMessage}`;
+            appendStderr(`${result.stderr ? "\n" : ""}${result.errorMessage}`);
           }
           forcedExitCode = 1;
           terminateChild();
@@ -528,6 +544,16 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       };
 
       const flushLine = (line: string) => {
+        if (Buffer.byteLength(line, "utf8") > MAX_JSON_LINE_BYTES) {
+          const message = `Subagent emitted a JSON event larger than ${MAX_JSON_LINE_BYTES} bytes.`;
+          result.processError = true;
+          result.stopReason = "error";
+          result.errorMessage = message;
+          appendStderr(`${result.stderr ? "\n" : ""}${message}`);
+          forcedExitCode = 1;
+          terminateChild();
+          return;
+        }
         if (processPiJsonLine(line, result)) emitUpdate();
         maybeFinishFromSettlement();
       };
@@ -550,7 +576,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
               result.stopReason = "error";
               result.errorMessage = `Named subagent session did not exit within ${PERSISTENT_SESSION_EXIT_TIMEOUT_MS}ms after settling; terminated to avoid hanging.`;
               if (!result.stderr.includes(result.errorMessage)) {
-                result.stderr += `${result.stderr ? "\n" : ""}${result.errorMessage}`;
+                appendStderr(`${result.stderr ? "\n" : ""}${result.errorMessage}`);
               }
               forcedExitCode = 1;
               terminateChild();
@@ -579,10 +605,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         const lines = buffer.split(/\r?\n/);
         buffer = lines.pop() || "";
         for (const line of lines) flushLine(line);
+        if (Buffer.byteLength(buffer, "utf8") > MAX_JSON_LINE_BYTES) {
+          flushLine(buffer);
+          buffer = "";
+        }
       };
 
       const onStderrData = (chunk: Buffer) => {
-        result.stderr += chunk.toString();
+        appendStderr(chunk.toString());
       };
 
       proc.stdout.on("data", onStdoutData);
@@ -603,7 +633,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
           result.stopReason = "error";
           result.errorMessage = signalFailure.message;
           if (!result.stderr.includes(signalFailure.message)) {
-            result.stderr += `${result.stderr ? "\n" : ""}${signalFailure.message}`;
+            appendStderr(`${result.stderr ? "\n" : ""}${signalFailure.message}`);
           }
         }
 
