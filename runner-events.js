@@ -75,6 +75,33 @@ function addAssistantMessages(result, messages) {
   return changed;
 }
 
+function getTextContent(content) {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("")
+    .trim();
+}
+
+function addToolError(result, event) {
+  if (!event?.isError) return;
+  const text = getTextContent(event.result?.content);
+  if (!text) return;
+  result.toolErrors ??= [];
+  if (!result.toolErrors.includes(text)) result.toolErrors.push(text);
+}
+
+export function hasAttributedToolError(result) {
+  if (result?.stopReason !== "error") return false;
+  const errorMessage = typeof result.errorMessage === "string" ? result.errorMessage.trim() : "";
+  if (!errorMessage || !Array.isArray(result.toolErrors)) return false;
+
+  return result.toolErrors.some((toolError) =>
+    typeof toolError === "string" && toolError.trim() === errorMessage
+  );
+}
+
 export function processPiEvent(event, result) {
   if (!event || typeof event !== "object") return false;
 
@@ -88,6 +115,10 @@ export function processPiEvent(event, result) {
     case "agent_end":
       result.sawAgentEnd = true;
       return addAssistantMessages(result, event.messages);
+
+    case "tool_execution_end":
+      addToolError(result, event);
+      return false;
 
     default:
       return false;
@@ -143,9 +174,18 @@ export function getProcessErrorText(result) {
 export function getResultSummaryText(result) {
   const finalText = getFinalAssistantText(result?.messages);
   const processErrorText = getProcessErrorText(result);
-  if (finalText && processErrorText) return `${finalText}\n\n${processErrorText}`;
+  const terminalErrorText =
+    !processErrorText &&
+    (result?.stopReason === "error" || result?.stopReason === "aborted") &&
+    !hasAttributedToolError(result) &&
+    typeof result?.errorMessage === "string" &&
+    result.errorMessage.trim()
+      ? `Subagent ${result.stopReason}: ${result.errorMessage.trim()}`
+      : "";
+  const errorText = processErrorText || terminalErrorText;
+  if (finalText && errorText) return `${finalText}\n\n${errorText}`;
   if (finalText) return finalText;
-  if (processErrorText) return processErrorText;
+  if (errorText) return errorText;
 
   if (typeof result?.errorMessage === "string" && result.errorMessage.trim()) {
     return result.errorMessage.trim();

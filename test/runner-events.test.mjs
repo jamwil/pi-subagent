@@ -48,6 +48,7 @@ test("repro: captures final assistant output from agent_end after non-zero tool 
   assert.equal(result.messages.length, 2);
   assert.equal(result.stopReason, "error");
   assert.equal(result.errorMessage, "Command exited with code 1");
+  assert.deepEqual(result.toolErrors, ["Command exited with code 1"]);
   assert.equal(result.usage.turns, 2);
   assert.equal(
     getFinalAssistantText(result.messages),
@@ -154,6 +155,24 @@ test("stderr remains a fallback only for error results", () => {
   failedResult.exitCode = 1;
   failedResult.stderr = "warning on stderr";
   assert.equal(getResultSummaryText(failedResult), "warning on stderr");
+});
+
+test("provider errors remain visible alongside partial assistant text", () => {
+  const result = makeResult();
+  result.exitCode = 0;
+  result.sawAgentEnd = true;
+  result.stopReason = "error";
+  result.errorMessage = "Connection reset while streaming";
+  result.messages.push({
+    role: "assistant",
+    content: [{ type: "text", text: "Partial answer" }],
+    timestamp: 1,
+  });
+
+  assert.equal(
+    getResultSummaryText(result),
+    "Partial answer\n\nSubagent error: Connection reset while streaming",
+  );
 });
 
 test("process errors remain visible alongside final assistant text", () => {

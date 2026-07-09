@@ -74,6 +74,7 @@ test("normalizeCompletedResult treats agent_end with final assistant output as s
     errorMessage: "Command exited with code 1",
     stderr: "Command exited with code 1",
     sawAgentEnd: true,
+    toolErrors: ["Command exited with code 1"],
     messages: [
       {
         role: "assistant",
@@ -90,6 +91,53 @@ test("normalizeCompletedResult treats agent_end with final assistant output as s
   assert.equal(result.errorMessage, undefined);
   assert.equal(isResultSuccess(result), true);
   assert.equal(isResultError(result), false);
+});
+
+test("normalizeCompletedResult preserves provider failures after partial output", () => {
+  for (const exitCode of [0, 1]) {
+    const result = makeResult({
+      exitCode,
+      stopReason: "error",
+      errorMessage: "Connection reset while streaming",
+      stderr: "Connection reset while streaming",
+      sawAgentEnd: true,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Partial answer" }],
+          timestamp: 1,
+        },
+      ],
+    });
+
+    normalizeCompletedResult(result, false);
+
+    assert.equal(isResultSuccess(result), false);
+    assert.equal(isResultError(result), true);
+    assert.equal(result.stopReason, "error");
+    assert.equal(result.errorMessage, "Connection reset while streaming");
+  }
+});
+
+test("normalizeCompletedResult keeps aborted provider output as a failure", () => {
+  const result = makeResult({
+    exitCode: 0,
+    stopReason: "aborted",
+    errorMessage: "Request aborted",
+    sawAgentEnd: true,
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Partial answer" }],
+        timestamp: 1,
+      },
+    ],
+  });
+
+  normalizeCompletedResult(result, false);
+
+  assert.equal(isResultSuccess(result), false);
+  assert.equal(isResultError(result), true);
 });
 
 test("normalizeCompletedResult preserves process-level errors despite semantic completion", () => {

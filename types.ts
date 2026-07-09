@@ -3,7 +3,7 @@
  */
 
 import type { Message } from "@earendil-works/pi-ai";
-import { getFinalAssistantText } from "./runner-events.js";
+import { getFinalAssistantText, hasAttributedToolError } from "./runner-events.js";
 
 /** Initial context for a newly-created subagent conversation. */
 export type InitialContext = "empty" | "parent";
@@ -48,6 +48,8 @@ export interface SingleResult {
 	stopReason?: string;
 	errorMessage?: string;
 	sawAgentEnd?: boolean;
+	/** Error text captured from failed child tool executions for terminal-status attribution. */
+	toolErrors?: string[];
 	/** Process-level failures that should not be normalized away by semantic assistant completion. */
 	processError?: boolean;
 }
@@ -87,9 +89,14 @@ export function hasFinalAssistantOutput(r: Pick<SingleResult, "messages">): bool
 	return getFinalAssistantText(r.messages).trim().length > 0;
 }
 
-/** Whether the child semantically completed the run. */
-export function hasSemanticCompletion(r: Pick<SingleResult, "messages" | "sawAgentEnd">): boolean {
-	return Boolean(r.sawAgentEnd) && hasFinalAssistantOutput(r);
+/** Whether the child semantically completed the run successfully. */
+export function hasSemanticCompletion(
+	r: Pick<SingleResult, "messages" | "sawAgentEnd" | "stopReason" | "errorMessage" | "toolErrors">,
+): boolean {
+	if (!r.sawAgentEnd || !hasFinalAssistantOutput(r)) return false;
+	if (r.stopReason === "aborted") return false;
+	if (r.stopReason === "error") return hasAttributedToolError(r);
+	return true;
 }
 
 /** Whether a result should be treated as successful by the wrapper/UI. */
@@ -109,9 +116,10 @@ export function isResultError(r: SingleResult): boolean {
 /** Reconcile process exit status with semantic completion observed from Pi's event stream. */
 export function normalizeCompletedResult(result: SingleResult, wasAborted: boolean): SingleResult {
 	const hasSemanticSuccess = hasSemanticCompletion(result);
+	const hasTerminalOutput = Boolean(result.sawAgentEnd) && hasFinalAssistantOutput(result);
 
 	if (wasAborted) {
-		if (hasSemanticSuccess && !result.processError) {
+		if (hasTerminalOutput && !result.processError && result.stopReason !== "error") {
 			result.exitCode = 0;
 			if (result.stopReason === "aborted") result.stopReason = undefined;
 			if (result.errorMessage === "Subagent was aborted.") {
