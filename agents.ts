@@ -22,6 +22,7 @@ export interface AgentConfig {
 	name: string;
 	description: string;
 	tools?: string[];
+	noTools?: boolean;
 	model?: string;
 	thinking?: string;
 	sessionPreference?: SessionPreference;
@@ -110,6 +111,15 @@ function parseSessionPreference(raw: unknown, filePath: string): SessionPreferen
 	return undefined;
 }
 
+function parseNoTools(raw: unknown, filePath: string): boolean | undefined {
+	if (raw === undefined) return undefined;
+	if (typeof raw === "boolean") return raw;
+	console.warn(
+		`[pi-subagent] Ignoring invalid noTools field in "${filePath}". Expected true or false.`,
+	);
+	return undefined;
+}
+
 function parseSessionHint(raw: unknown, filePath: string): string | undefined {
 	if (raw === undefined) return undefined;
 	if (typeof raw !== "string") {
@@ -180,10 +190,18 @@ function parseAgentFile(filePath: string, source: "user" | "project"): AgentConf
 		);
 	}
 
+	const noTools = parseNoTools(frontmatter.noTools, filePath);
+	if (noTools === true && tools && tools.length > 0) {
+		console.warn(
+			`[pi-subagent] Agent file "${filePath}" sets noTools: true and a non-empty tools list. noTools takes precedence.`,
+		);
+	}
+
 	return {
 		name,
 		description,
 		tools,
+		noTools,
 		model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
 		thinking: typeof frontmatter.thinking === "string" ? frontmatter.thinking : undefined,
 		sessionPreference: parseSessionPreference(frontmatter.sessionPreference, filePath),

@@ -33,7 +33,13 @@ export function parseFrontmatter(content) {
         if (separator === -1) continue;
         const key = line.slice(0, separator).trim();
         const value = line.slice(separator + 1).trim();
-        frontmatter[key] = value;
+        frontmatter[key] = value === "true"
+          ? true
+          : value === "false"
+            ? false
+            : value === "[]"
+              ? []
+              : value;
       }
       return { frontmatter, body: match[2] ?? "" };
     }
@@ -234,6 +240,37 @@ test("parses optional session guidance from agent frontmatter", () => {
       byName.get("hint-only")?.sessionHint,
       "Use a named session only after the first broad pass.",
     );
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("parses explicit noTools while preserving empty tools inheritance", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-agents-fixture-"));
+  const configDir = path.join(tmpDir, "override-config");
+  const agentsDir = path.join(configDir, "agents");
+  const { moduleUrl, cleanup } = createTestableAgentsModule();
+
+  fs.mkdirSync(agentsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(agentsDir, "tool-free.md"),
+    "---\nname: tool-free\ndescription: No tools\nnoTools: true\n---\n\nNo tools.\n",
+  );
+  fs.writeFileSync(
+    path.join(agentsDir, "inherit.md"),
+    "---\nname: inherit\ndescription: Inherit tools\ntools: []\n---\n\nInherit.\n",
+  );
+
+  try {
+    const discovery = runDiscoverAgents(moduleUrl, tmpDir, "user", {
+      PI_CODING_AGENT_DIR: configDir,
+    });
+    const byName = new Map(discovery.agents.map((agent) => [agent.name, agent]));
+
+    assert.equal(byName.get("tool-free")?.noTools, true);
+    assert.equal(byName.get("inherit")?.tools, undefined);
+    assert.equal(byName.get("inherit")?.noTools, undefined);
   } finally {
     cleanup();
     fs.rmSync(tmpDir, { recursive: true, force: true });

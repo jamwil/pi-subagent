@@ -131,14 +131,15 @@ You review code changes. Focus on substantive issues, cite files and lines, and 
 | `description` | Yes | — | What the agent does; shown to the main agent. |
 | `model` | No | Parent/default Pi model | Sets the default model for this agent. A per-call `model` overrides it. Supports provider-prefixed values such as `anthropic/claude-3-5-sonnet`. |
 | `thinking` | No | Parent/default Pi thinking level | Sets the thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). |
-| `tools` | No | `read,bash,edit,write` | Comma-separated list of built-in tools to enable for this agent. |
+| `tools` | No | Parent/default Pi tools | Comma-separated allowlist of tool names to enable for this agent. Omitted or empty values inherit the parent configuration. |
+| `noTools` | No | `false` | Set to `true` to disable all built-in, extension, and custom tools for this agent. |
 | `sessionPreference` | No | — | Advisory machine-readable hint for the main agent. One of `ephemeral`, `persistent`, or `either`. |
 | `sessionHint` | No | — | Advisory free-form guidance shown to the main agent when choosing whether to pass `session`. |
 
 Notes:
 
 - Agent `model` is a default for that agent, not a lock. A `model` supplied in a subagent call wins.
-- `tools` controls built-in tools. Extension tools remain available unless extensions are disabled.
+- `tools` is passed to Pi's `--tools` allowlist and can include built-in or extension tool names. `noTools: true` takes precedence over `tools`.
 - `sessionPreference` and `sessionHint` only guide the main agent. They do not automatically create, require, or name persistent sessions.
 - `sessionHint` can be used by itself for free-form guidance; the extension does not infer `sessionPreference` from it.
 - The Markdown body becomes the agent's system prompt and is appended to Pi's default system prompt.
@@ -154,7 +155,7 @@ Optional built-in tools:
 - `find` — Find files by glob pattern
 - `ls` — List directory contents
 
-For a read-only agent, use `tools: read,find,ls,grep`.
+For a read-only agent, use `tools: read,find,ls,grep`. For an agent with no tools at all, use `noTools: true`.
 
 ---
 

@@ -185,7 +185,9 @@ export function buildPiArgs(
   const thinking = agent.thinking ?? inheritedCliArgs.fallbackThinking;
   if (thinking) args.push("--thinking", thinking);
 
-  if (agent.tools && agent.tools.length > 0) {
+  if (agent.noTools === true) {
+    args.push("--no-tools");
+  } else if (agent.tools && agent.tools.length > 0) {
     args.push("--tools", agent.tools.join(","));
   } else if (agent.tools === undefined) {
     if (inheritedCliArgs.fallbackTools !== undefined) {

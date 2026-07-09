@@ -427,6 +427,19 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
     );
 
     assert.deepEqual(
+      buildPiArgs(
+        { ...agent, tools: ["read"], noTools: true },
+        null,
+        "hello",
+        "empty",
+        null,
+        undefined,
+        undefined,
+      ),
+      ["--mode", "json", "-p", "--no-session", "--no-tools", "hello"],
+    );
+
+    assert.deepEqual(
       buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined),
       ["--mode", "json", "-p", "--no-session", "--model", "agent-model", "hello"],
     );
