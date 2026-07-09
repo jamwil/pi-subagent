@@ -321,6 +321,66 @@ test("runAgent returns immediately when the signal is already aborted", async ()
   }
 });
 
+test("runAgent delivers CLI-like prompts verbatim through stdin", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-stdin-"));
+  const harnessPath = path.join(tmpDir, "stdin-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      let prompt = "";
+      for await (const chunk of process.stdin) prompt += chunk.toString();
+      const message = {
+        role: "assistant",
+        content: [{ type: "text", text: prompt }],
+        stopReason: "stop",
+        timestamp: 1,
+      };
+      process.stdout.write(JSON.stringify({ type: "message_end", message }) + "\\n");
+      process.stdout.write(JSON.stringify({ type: "agent_end", messages: [message] }) + "\\n");
+      process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const results = [];
+      for (const prompt of ["--approve", "--help", "@/tmp/secret", "-leading"]) {
+        results.push(await runAgent({
+          cwd: process.cwd(),
+          agents: [{ name: "echo", description: "echo", source: "user", systemPrompt: "" }],
+          callIndex: 0,
+          agentName: "echo",
+          prompt,
+          initialContext: "empty",
+          parentDepth: 0,
+          parentAgentStack: [],
+          maxDepth: 3,
+          preventCycles: true,
+          makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+        }));
+      }
+      process.stdout.write(JSON.stringify(results));
+    }`,
+  );
+
+  try {
+    const results = JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    );
+
+    assert.deepEqual(
+      results.map((result) => result.messages.at(-1).content[0].text),
+      ["--approve", "--help", "@/tmp/secret", "-leading"],
+    );
+    assert.equal(results.every((result) => result.exitCode === 0), true);
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("runAgent enforces an explicitly configured wall-clock timeout", () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-timeout-"));
@@ -389,12 +449,12 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
 
     assert.deepEqual(
       buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined),
-      ["--mode", "json", "-p", "--no-session", "hello"],
+      ["--mode", "json", "-p", "--no-session"],
     );
 
     assert.deepEqual(
       buildPiArgs(agent, null, "hello", "parent", "/tmp/parent.jsonl", undefined, undefined),
-      ["--mode", "json", "-p", "--session", "/tmp/parent.jsonl", "hello"],
+      ["--mode", "json", "-p", "--session", "/tmp/parent.jsonl"],
     );
 
     assert.deepEqual(
@@ -409,7 +469,6 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
         "subagent.abc123",
         "--name",
         "subagent: review · api-review",
-        "hello",
       ],
     );
 
@@ -423,7 +482,7 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
         { ...session, created: false, initialContextApplied: null },
         undefined,
       ),
-      ["--mode", "json", "-p", "--session-id", "subagent.abc123", "hello"],
+      ["--mode", "json", "-p", "--session-id", "subagent.abc123"],
     );
 
     assert.deepEqual(
@@ -436,17 +495,17 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
         undefined,
         undefined,
       ),
-      ["--mode", "json", "-p", "--no-session", "--no-tools", "hello"],
+      ["--mode", "json", "-p", "--no-session", "--no-tools"],
     );
 
     assert.deepEqual(
       buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined),
-      ["--mode", "json", "-p", "--no-session", "--model", "agent-model", "hello"],
+      ["--mode", "json", "-p", "--no-session", "--model", "agent-model"],
     );
 
     assert.deepEqual(
       buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, "call-model"),
-      ["--mode", "json", "-p", "--no-session", "--model", "call-model", "hello"],
+      ["--mode", "json", "-p", "--no-session", "--model", "call-model"],
     );
   } finally {
     cleanup();

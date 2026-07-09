@@ -142,7 +142,7 @@ const inheritedCliArgs = parseInheritedCliArgs(process.argv);
 export function buildPiArgs(
   agent: AgentConfig,
   systemPromptPath: string | null,
-  prompt: string,
+  _prompt: string,
   initialContext: InitialContext,
   parentSessionPath: string | null,
   session: SubagentSessionDetails | undefined,
@@ -198,7 +198,6 @@ export function buildPiArgs(
   }
 
   if (systemPromptPath) args.push("--append-system-prompt", systemPromptPath);
-  args.push(prompt);
   return args;
 }
 
@@ -404,7 +403,9 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       proc.stdin.on("error", () => {
         /* ignore broken pipe on fast exits */
       });
-      proc.stdin.end();
+      // Stdin is Pi's unambiguous non-interactive prompt channel. Passing the
+      // prompt in argv would reinterpret leading "-" or "@" as CLI syntax.
+      proc.stdin.end(prompt);
 
       let buffer = "";
       let didClose = false;
