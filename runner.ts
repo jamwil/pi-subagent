@@ -39,6 +39,29 @@ type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 // Process helpers
 // ---------------------------------------------------------------------------
 
+export interface UnexpectedSignalFailure {
+  exitCode: number;
+  message: string;
+}
+
+/** Classify a signal exit that was not initiated by cancellation or a watchdog. */
+export function getUnexpectedSignalFailure(
+  code: number | null,
+  signalName: NodeJS.Signals | null,
+  wasAborted: boolean,
+  forcedExitCode?: number,
+): UnexpectedSignalFailure | null {
+  if (code !== null || !signalName || wasAborted || forcedExitCode !== undefined) {
+    return null;
+  }
+
+  const signalNumber = os.constants.signals[signalName];
+  return {
+    exitCode: typeof signalNumber === "number" ? 128 + signalNumber : 1,
+    message: `Subagent terminated unexpectedly by ${signalName}.`,
+  };
+}
+
 /**
  * Derive the spawn command from the current process context so child invocations
  * work on Unix and Windows without going through a shell wrapper.
@@ -490,13 +513,32 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       proc.stdout.on("data", onStdoutData);
       proc.stderr.on("data", onStderrData);
 
-      proc.on("close", (code) => {
+      proc.on("close", (code, signalName) => {
         didClose = true;
         if (buffer.trim()) flushBufferedLines(buffer);
-        finish(code ?? 0);
+
+        const signalFailure = getUnexpectedSignalFailure(
+          code,
+          signalName,
+          wasAborted,
+          forcedExitCode,
+        );
+        if (signalFailure && !settled) {
+          result.processError = true;
+          result.stopReason = "error";
+          result.errorMessage = signalFailure.message;
+          if (!result.stderr.includes(signalFailure.message)) {
+            result.stderr += `${result.stderr ? "\n" : ""}${signalFailure.message}`;
+          }
+        }
+
+        finish(code ?? signalFailure?.exitCode ?? 1);
       });
 
       proc.on("error", (err) => {
+        result.processError = true;
+        result.stopReason = "error";
+        result.errorMessage = err.message;
         if (!result.stderr.trim()) result.stderr = err.message;
         finish(1);
       });

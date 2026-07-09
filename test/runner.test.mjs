@@ -192,6 +192,24 @@ test("running results are neither success nor error", () => {
   assert.equal(isResultError(result), false);
 });
 
+test("classifies only unexpected signal exits as process failures", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { getUnexpectedSignalFailure } = await import(moduleUrl);
+
+    const failure = getUnexpectedSignalFailure(null, "SIGTERM", false, undefined);
+    assert.ok(failure);
+    assert.equal(failure.exitCode > 0, true);
+    assert.match(failure.message, /SIGTERM/);
+
+    assert.equal(getUnexpectedSignalFailure(1, null, false, undefined), null);
+    assert.equal(getUnexpectedSignalFailure(null, "SIGTERM", true, undefined), null);
+    assert.equal(getUnexpectedSignalFailure(null, "SIGTERM", false, 1), null);
+  } finally {
+    cleanup();
+  }
+});
+
 test("rewriteSessionHeaderCwd updates only the session header cwd", async () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   try {
