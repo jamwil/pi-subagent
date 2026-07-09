@@ -132,6 +132,12 @@ test("falls back to the latest assistant message that contains text", () => {
   assert.equal(getFinalAssistantText(result.messages), "Complete answer");
 });
 
+test("records successful RPC prompt acceptance", () => {
+  const result = makeResult();
+  processPiEvent({ type: "response", command: "prompt", success: true }, result);
+  assert.equal(result.rpcPromptAccepted, true);
+});
+
 test("records agent settlement separately from low-level agent_end", () => {
   const result = makeResult();
   processPiEvent({ type: "agent_end", messages: [] }, result);

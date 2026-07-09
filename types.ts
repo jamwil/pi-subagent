@@ -48,8 +48,11 @@ export interface SingleResult {
 	model?: string;
 	stopReason?: string;
 	errorMessage?: string;
+	sawAgentStart?: boolean;
 	sawAgentEnd?: boolean;
 	sawAgentSettled?: boolean;
+	rpcPromptAccepted?: boolean;
+	handledWithoutAgent?: boolean;
 	/** Immediately pending failed-tool text for terminal-status attribution. */
 	pendingToolError?: string;
 	/** Older or oversized assistant messages were omitted to bound memory. */
@@ -97,8 +100,12 @@ export function hasFinalAssistantOutput(r: Pick<SingleResult, "messages">): bool
 
 /** Whether the child semantically completed the run successfully. */
 export function hasSemanticCompletion(
-	r: Pick<SingleResult, "messages" | "sawAgentEnd" | "stopReason" | "errorMessage" | "pendingToolError">,
+	r: Pick<
+		SingleResult,
+		"messages" | "sawAgentEnd" | "stopReason" | "errorMessage" | "pendingToolError" | "handledWithoutAgent"
+	>,
 ): boolean {
+	if (r.handledWithoutAgent) return true;
 	if (!r.sawAgentEnd || !hasFinalAssistantOutput(r)) return false;
 	if (r.stopReason === "aborted") return false;
 	if (r.stopReason === "error") return hasAttributedToolError(r);

@@ -139,6 +139,10 @@ export function processPiEvent(event, result) {
   if (!event || typeof event !== "object") return false;
 
   switch (event.type) {
+    case "agent_start":
+      result.sawAgentStart = true;
+      return false;
+
     case "message_end":
       if (event.message?.role === "assistant") result.pendingToolError = undefined;
       return addAssistantMessage(result, event.message);
@@ -160,7 +164,9 @@ export function processPiEvent(event, result) {
       return false;
 
     case "response":
-      if (event.success === false) {
+      if (event.command === "prompt" && event.success === true) {
+        result.rpcPromptAccepted = true;
+      } else if (event.success === false) {
         const message = typeof event.error === "string" ? event.error : "Subagent RPC prompt failed.";
         result.processError = true;
         result.stopReason = "error";
@@ -222,6 +228,9 @@ export function getProcessErrorText(result) {
 
 export function getResultSummaryText(result) {
   const finalText = getFinalAssistantText(result?.messages);
+  if (!finalText && result?.handledWithoutAgent) {
+    return "Subagent prompt was handled without an agent response.";
+  }
   const processErrorText = getProcessErrorText(result);
   const terminalErrorText =
     !processErrorText &&

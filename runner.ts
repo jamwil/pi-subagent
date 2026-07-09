@@ -37,7 +37,7 @@ const SUBAGENT_PREVENT_CYCLES_ENV = "PI_SUBAGENT_PREVENT_CYCLES";
 const SUBAGENT_TEMP_PARENT_SESSION_ENV = "PI_SUBAGENT_TEMP_PARENT_SESSION";
 const PI_OFFLINE_ENV = "PI_OFFLINE";
 const PERSISTENT_SESSION_EXIT_TIMEOUT_MS = 30_000;
-const MAX_JSON_LINE_BYTES = 5 * 1024 * 1024;
+const MAX_JSON_LINE_BYTES = 25 * 1024 * 1024;
 const MAX_STDERR_BYTES = DEFAULT_MAX_BYTES;
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
@@ -432,6 +432,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       let semanticCompletionTimer: NodeJS.Timeout | undefined;
       let persistentSessionExitTimer: NodeJS.Timeout | undefined;
       let runTimeoutTimer: NodeJS.Timeout | undefined;
+      let rpcHandledTimer: NodeJS.Timeout | undefined;
       let sigkillTimer: NodeJS.Timeout | undefined;
       let terminationSettleTimer: NodeJS.Timeout | undefined;
       let terminationStarted = false;
@@ -465,6 +466,13 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         if (runTimeoutTimer) {
           clearTimeout(runTimeoutTimer);
           runTimeoutTimer = undefined;
+        }
+      };
+
+      const clearRpcHandledTimer = () => {
+        if (rpcHandledTimer) {
+          clearTimeout(rpcHandledTimer);
+          rpcHandledTimer = undefined;
         }
       };
 
@@ -542,6 +550,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         clearSemanticCompletionTimer();
         clearPersistentSessionExitTimer();
         clearRunTimeoutTimer();
+        clearRpcHandledTimer();
         if (sigkillTimer) clearTimeout(sigkillTimer);
         if (terminationSettleTimer) clearTimeout(terminationSettleTimer);
         if (signal && abortHandler) {
@@ -561,7 +570,35 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
           terminateChild();
           return;
         }
+        let event: any;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          event = undefined;
+        }
+        if (event?.type === "extension_ui_request" && typeof event.id === "string") {
+          proc.stdin.write(`${JSON.stringify({
+            type: "extension_ui_response",
+            id: event.id,
+            cancelled: true,
+          })}\n`);
+        }
+
         if (processPiJsonLine(line, result)) emitUpdate();
+        if (result.sawAgentStart) clearRpcHandledTimer();
+        if (
+          result.rpcPromptAccepted &&
+          !result.sawAgentStart &&
+          !result.sawAgentSettled &&
+          !rpcHandledTimer
+        ) {
+          rpcHandledTimer = setTimeout(() => {
+            if (result.sawAgentStart || result.sawAgentSettled || settled) return;
+            result.handledWithoutAgent = true;
+            result.sawAgentSettled = true;
+            maybeFinishFromSettlement();
+          }, AGENT_END_GRACE_MS);
+        }
         maybeFinishFromSettlement();
       };
 
@@ -602,7 +639,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
           }
           proc.stdout.removeListener("data", onStdoutData);
           proc.stderr.removeListener("data", onStderrData);
-          finish(0);
+          forcedExitCode = 0;
           terminateChild();
         }, AGENT_END_GRACE_MS);
         semanticCompletionTimer.unref();
