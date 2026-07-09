@@ -24,6 +24,7 @@ import {
 
 const isWindows = process.platform === "win32";
 const SIGKILL_TIMEOUT_MS = 5000;
+const TERMINATION_SETTLE_TIMEOUT_MS = SIGKILL_TIMEOUT_MS + 1000;
 const AGENT_END_GRACE_MS = 250;
 const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
 const SUBAGENT_MAX_DEPTH_ENV = "PI_SUBAGENT_MAX_DEPTH";
@@ -388,6 +389,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       const proc = spawn(command, [...prefixArgs, ...piArgs], {
         cwd: callCwd ?? cwd,
         shell: false,
+        detached: !isWindows,
         stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...process.env,
@@ -414,6 +416,9 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       let semanticCompletionTimer: NodeJS.Timeout | undefined;
       let persistentSessionExitTimer: NodeJS.Timeout | undefined;
       let runTimeoutTimer: NodeJS.Timeout | undefined;
+      let sigkillTimer: NodeJS.Timeout | undefined;
+      let terminationSettleTimer: NodeJS.Timeout | undefined;
+      let terminationStarted = false;
       let forcedExitCode: number | undefined;
 
       const clearSemanticCompletionTimer = () => {
@@ -437,7 +442,25 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         }
       };
 
+      const signalProcessTree = (signalName: NodeJS.Signals) => {
+        if (proc.pid === undefined) return;
+        try {
+          // Detached Unix children lead their own process group. A negative PID
+          // signals Pi and every descendant that has not deliberately escaped.
+          process.kill(-proc.pid, signalName);
+        } catch {
+          try {
+            proc.kill(signalName);
+          } catch {
+            // The process may already have exited between checks.
+          }
+        }
+      };
+
       const terminateChild = () => {
+        if (terminationStarted) return;
+        terminationStarted = true;
+
         if (isWindows) {
           if (proc.pid !== undefined) {
             const killer = spawn("taskkill", ["/T", "/F", "/PID", String(proc.pid)], {
@@ -445,14 +468,22 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
             });
             killer.unref();
           }
-          return;
+        } else {
+          signalProcessTree("SIGTERM");
+          sigkillTimer = setTimeout(() => {
+            if (!didClose) signalProcessTree("SIGKILL");
+          }, SIGKILL_TIMEOUT_MS);
+          sigkillTimer.unref();
         }
 
-        proc.kill("SIGTERM");
-        const sigkillTimer = setTimeout(() => {
-          if (!didClose) proc.kill("SIGKILL");
-        }, SIGKILL_TIMEOUT_MS);
-        sigkillTimer.unref();
+        terminationSettleTimer = setTimeout(() => {
+          if (didClose || settled) return;
+          proc.stdout.removeListener("data", onStdoutData);
+          proc.stderr.removeListener("data", onStderrData);
+          if (forcedExitCode === undefined) forcedExitCode = wasAborted ? 130 : 1;
+          finish(forcedExitCode);
+        }, TERMINATION_SETTLE_TIMEOUT_MS);
+        terminationSettleTimer.unref();
       };
 
       if (timeoutMs !== undefined) {
@@ -477,6 +508,8 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         clearSemanticCompletionTimer();
         clearPersistentSessionExitTimer();
         clearRunTimeoutTimer();
+        if (sigkillTimer) clearTimeout(sigkillTimer);
+        if (terminationSettleTimer) clearTimeout(terminationSettleTimer);
         if (signal && abortHandler) {
           signal.removeEventListener("abort", abortHandler);
         }

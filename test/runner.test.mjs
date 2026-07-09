@@ -482,6 +482,59 @@ test("runAgent enforces an explicitly configured wall-clock timeout", () => {
   }
 });
 
+test(
+  "runAgent timeout terminates Unix descendant processes",
+  { skip: process.platform === "win32" },
+  () => {
+    const { moduleUrl, cleanup } = createTestableRunnerModule();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-tree-"));
+    const harnessPath = path.join(tmpDir, "tree-harness.mjs");
+    const markerPath = path.join(tmpDir, "descendant-marker");
+
+    fs.writeFileSync(
+      harnessPath,
+      `import fs from "node:fs";
+      import { spawn } from "node:child_process";
+      if (process.argv.includes("--mode")) {
+        spawn(process.execPath, ["-e", ${JSON.stringify(`setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "alive"), 600)`) }], { stdio: "ignore" });
+        setInterval(() => {}, 1000);
+      } else {
+        const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+        const result = await runAgent({
+          cwd: process.cwd(),
+          agents: [{ name: "tree", description: "tree", source: "user", systemPrompt: "" }],
+          callIndex: 0,
+          agentName: "tree",
+          prompt: "hello",
+          initialContext: "empty",
+          parentDepth: 0,
+          parentAgentStack: [],
+          maxDepth: 3,
+          preventCycles: true,
+          timeoutMs: 100,
+          makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+        });
+        await new Promise((resolve) => setTimeout(resolve, 900));
+        process.stdout.write(JSON.stringify({ result, markerExists: fs.existsSync(${JSON.stringify(markerPath)}) }));
+      }`,
+    );
+
+    try {
+      const output = JSON.parse(
+        execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+          encoding: "utf8",
+          timeout: 10_000,
+        }),
+      );
+      assert.equal(output.result.processError, true);
+      assert.equal(output.markerExists, false);
+    } finally {
+      cleanup();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("buildPiArgs plans ephemeral and persistent session flags", async () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   try {
