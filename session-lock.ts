@@ -53,9 +53,13 @@ function lockTimestamp(lockPath: string): number | null {
   }
 
   try {
-    return fs.statSync(lockPath).mtimeMs;
+    return fs.statSync(ownerPath(lockPath)).mtimeMs;
   } catch {
-    return null;
+    try {
+      return fs.statSync(lockPath).mtimeMs;
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -79,24 +83,37 @@ function writeLockOwner(
   token: string,
   createdAt: string,
 ): void {
-  fs.writeFileSync(
-    ownerPath(lockPath),
-    JSON.stringify(
-      {
-        token,
-        pid: process.pid,
-        createdAt,
-        updatedAt: new Date().toISOString(),
-        sessionId: target.sessionId,
-        agent: target.agent,
-        handle: target.handle,
-        cwd: target.cwd,
-      },
-      null,
-      2,
-    ),
-    { encoding: "utf-8", mode: 0o600 },
+  const destination = ownerPath(lockPath);
+  const temporary = `${destination}.${token}.${randomUUID()}.tmp`;
+  const content = JSON.stringify(
+    {
+      token,
+      pid: process.pid,
+      createdAt,
+      updatedAt: new Date().toISOString(),
+      sessionId: target.sessionId,
+      agent: target.agent,
+      handle: target.handle,
+      cwd: target.cwd,
+    },
+    null,
+    2,
   );
+
+  try {
+    fs.writeFileSync(temporary, content, {
+      encoding: "utf-8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    fs.renameSync(temporary, destination);
+  } finally {
+    try {
+      fs.rmSync(temporary, { force: true });
+    } catch {
+      // Best effort if the atomic replacement failed.
+    }
+  }
 }
 
 export function lockTokenMatches(lock: Pick<SessionLock, "path" | "token">): boolean {
