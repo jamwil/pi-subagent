@@ -3,6 +3,7 @@
  */
 
 import * as os from "node:os";
+import * as path from "node:path";
 import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@earendil-works/pi-tui";
 import { getProcessErrorText, getResultSummaryText } from "./runner-events.js";
@@ -49,9 +50,11 @@ function truncate(text: string, maxLen: number): string {
 	return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
 }
 
-function shortenPath(p: string): string {
+export function shortenPath(p: string): string {
 	const home = os.homedir();
-	return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+	return p === home || p.startsWith(`${home}${path.sep}`)
+		? `~${p.slice(home.length)}`
+		: p;
 }
 
 function oneLine(text: unknown): string {
