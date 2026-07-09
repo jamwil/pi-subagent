@@ -199,6 +199,7 @@ Each call supports:
 | `cwd` | No | Parent cwd | Working directory for this subagent process. |
 | `initialContext` | No | `"empty"` | `"empty"` starts a newly-created child conversation without parent history. `"parent"` seeds a newly-created child conversation from the current parent session snapshot. Existing named sessions ignore this field. |
 | `session` | No | — | Logical handle for a persistent child Pi session. Use this for multi-turn specialist work. Requires a persisted parent Pi session. |
+| `timeout` | No | Unlimited | Positive integer wall-clock timeout in seconds for this call. On expiry, partial output is preserved and the call fails. |
 
 #### One ephemeral call
 

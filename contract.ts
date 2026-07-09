@@ -16,7 +16,7 @@ export interface DelegationGuardSummary {
 }
 
 interface CallFieldContract {
-  name: "agent" | "prompt" | "model" | "cwd" | "initialContext" | "session";
+  name: "agent" | "prompt" | "model" | "cwd" | "initialContext" | "session" | "timeout";
   required: boolean;
   schemaDescription: string;
   promptDescription: string;
@@ -65,6 +65,14 @@ export const CALL_FIELDS: CallFieldContract[] = [
       "Optional logical handle for a persistent subagent session. Scoped by parent session, effective cwd, and agent name.",
     promptDescription:
       "durable conversation handle. If present, the call continues or creates a persistent child Pi session. The handle is scoped by parent session, effective cwd, and agent name. The same handle used with different agents resolves to different sessions. Requires a persisted parent Pi session",
+  },
+  {
+    name: "timeout",
+    required: false,
+    schemaDescription:
+      "Optional positive integer wall-clock timeout in seconds for this call. Omitted means no run timeout.",
+    promptDescription:
+      "positive integer wall-clock timeout in seconds. Omit it to allow an unlimited run",
   },
 ];
 

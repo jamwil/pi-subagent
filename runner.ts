@@ -235,6 +235,8 @@ export interface RunAgentOptions {
   maxDepth: number;
   /** Whether cycle prevention should be enforced in child processes. */
   preventCycles: boolean;
+  /** Optional wall-clock timeout for the child run. Omitted means unlimited. */
+  timeoutMs?: number;
   /** Abort signal for cancellation. */
   signal?: AbortSignal;
   /** Streaming update callback. */
@@ -265,6 +267,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     parentAgentStack,
     maxDepth,
     preventCycles,
+    timeoutMs,
     signal,
     onUpdate,
     makeDetails,
@@ -407,6 +410,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       let abortHandler: (() => void) | undefined;
       let semanticCompletionTimer: NodeJS.Timeout | undefined;
       let persistentSessionExitTimer: NodeJS.Timeout | undefined;
+      let runTimeoutTimer: NodeJS.Timeout | undefined;
       let forcedExitCode: number | undefined;
 
       const clearSemanticCompletionTimer = () => {
@@ -420,6 +424,13 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         if (persistentSessionExitTimer) {
           clearTimeout(persistentSessionExitTimer);
           persistentSessionExitTimer = undefined;
+        }
+      };
+
+      const clearRunTimeoutTimer = () => {
+        if (runTimeoutTimer) {
+          clearTimeout(runTimeoutTimer);
+          runTimeoutTimer = undefined;
         }
       };
 
@@ -441,11 +452,28 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         sigkillTimer.unref();
       };
 
+      if (timeoutMs !== undefined) {
+        runTimeoutTimer = setTimeout(() => {
+          if (didClose || settled) return;
+          const timeoutSeconds = timeoutMs / 1000;
+          result.processError = true;
+          result.stopReason = "error";
+          result.errorMessage = `Subagent exceeded its configured ${timeoutSeconds}s run timeout.`;
+          if (!result.stderr.includes(result.errorMessage)) {
+            result.stderr += `${result.stderr ? "\n" : ""}${result.errorMessage}`;
+          }
+          forcedExitCode = 1;
+          terminateChild();
+        }, timeoutMs);
+        runTimeoutTimer.unref();
+      }
+
       const finish = (code: number) => {
         if (settled) return;
         settled = true;
         clearSemanticCompletionTimer();
         clearPersistentSessionExitTimer();
+        clearRunTimeoutTimer();
         if (signal && abortHandler) {
           signal.removeEventListener("abort", abortHandler);
         }
@@ -465,6 +493,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
 
       const maybeFinishFromAgentEnd = () => {
         if (!result.sawAgentEnd || didClose || settled) return;
+        clearRunTimeoutTimer();
         if (session) {
           // Named sessions persist child history. Let Pi exit naturally so its
           // session file is fully flushed before the parent reports completion.
@@ -548,6 +577,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         abortHandler = () => {
           if (didClose || settled) return;
           wasAborted = true;
+          clearRunTimeoutTimer();
           terminateChild();
         };
         if (signal.aborted) abortHandler();

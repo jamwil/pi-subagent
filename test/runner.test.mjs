@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { isResultError, isResultSuccess, normalizeCompletedResult } from "../types.ts";
 
@@ -317,6 +318,53 @@ test("runAgent returns immediately when the signal is already aborted", async ()
     assert.equal(result.errorMessage, "Subagent was aborted.");
   } finally {
     cleanup();
+  }
+});
+
+test("runAgent enforces an explicitly configured wall-clock timeout", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-timeout-"));
+  const harnessPath = path.join(tmpDir, "timeout-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      setInterval(() => {}, 1000);
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const result = await runAgent({
+        cwd: process.cwd(),
+        agents: [{ name: "hang", description: "hang", source: "user", systemPrompt: "" }],
+        callIndex: 0,
+        agentName: "hang",
+        prompt: "hello",
+        initialContext: "empty",
+        parentDepth: 0,
+        parentAgentStack: [],
+        maxDepth: 3,
+        preventCycles: true,
+        timeoutMs: 100,
+        makeDetails: (results) => ({ kind: "pi-subagent", projectAgentsDir: null, results }),
+      });
+      process.stdout.write(JSON.stringify(result));
+    }`,
+  );
+
+  try {
+    const result = JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    );
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.processError, true);
+    assert.equal(result.stopReason, "error");
+    assert.match(result.errorMessage, /configured 0\.1s run timeout/);
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 

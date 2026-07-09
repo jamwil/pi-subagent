@@ -52,6 +52,7 @@ const SUBAGENT_TEMP_PARENT_SESSION_ENV = "PI_SUBAGENT_TEMP_PARENT_SESSION";
 const SESSION_ID_NAMESPACE = "pi-subagent/v1";
 const SESSION_ID_PREFIX = "subagent.";
 const SESSION_HANDLE_MAX_LENGTH = 120;
+const MAX_TIMEOUT_SECONDS = Math.floor(2_147_483_647 / 1000);
 
 // ---------------------------------------------------------------------------
 // Tool parameter schema
@@ -79,6 +80,13 @@ const CallItem = Type.Object({
   session: Type.Optional(
     Type.String({
       description: getCallFieldSchemaDescription("session"),
+    }),
+  ),
+  timeout: Type.Optional(
+    Type.Integer({
+      description: getCallFieldSchemaDescription("timeout"),
+      minimum: 1,
+      maximum: MAX_TIMEOUT_SECONDS,
     }),
   ),
 });
@@ -115,6 +123,7 @@ interface NormalizedCall {
   initialContext: InitialContext;
   sessionHandle?: string;
   session?: SubagentSessionDetails;
+  timeoutMs?: number;
 }
 
 interface NormalizedCallsResult {
@@ -375,6 +384,21 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
       return { error: `calls[${index}].initialContext must be "empty" or "parent".` };
     }
 
+    let timeoutMs: number | undefined;
+    if (call.timeout !== undefined) {
+      if (
+        typeof call.timeout !== "number" ||
+        !Number.isInteger(call.timeout) ||
+        call.timeout < 1 ||
+        call.timeout > MAX_TIMEOUT_SECONDS
+      ) {
+        return {
+          error: `calls[${index}].timeout must be an integer between 1 and ${MAX_TIMEOUT_SECONDS} seconds when provided.`,
+        };
+      }
+      timeoutMs = call.timeout * 1000;
+    }
+
     let effectiveCwd: string;
     if (call.cwd !== undefined) {
       if (typeof call.cwd !== "string" || call.cwd.trim().length === 0) {
@@ -416,6 +440,7 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
       effectiveCwd,
       initialContext,
       sessionHandle,
+      timeoutMs,
     });
   }
 
@@ -919,6 +944,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
             parentAgentStack: ancestorAgentStack,
             maxDepth,
             preventCycles,
+            timeoutMs: call.timeoutMs,
             signal,
             onUpdate: (partial) => {
               if (partial.details?.results[0]) {
