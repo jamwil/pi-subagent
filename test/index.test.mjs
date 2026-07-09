@@ -58,6 +58,18 @@ function createContext(cwd, trusted) {
   };
 }
 
+test("subagent schema uses a Google-compatible initialContext enum", () => {
+  const harness = createPiHarness();
+  const schema = harness.tools.get("subagent").parameters;
+  const initialContext = schema.properties.calls.items.properties.initialContext;
+
+  assert.equal(initialContext.type, "string");
+  assert.deepEqual(initialContext.enum, ["empty", "parent"]);
+  assert.equal(initialContext.default, "empty");
+  assert.equal(initialContext.anyOf, undefined);
+  assert.equal(initialContext.oneOf, undefined);
+});
+
 test("extension lifecycle excludes untrusted project agents consistently", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-index-"));
   const configDir = path.join(tmpDir, "config");

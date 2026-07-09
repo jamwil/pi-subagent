@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { type AgentConfig, STARTER_AGENT_NAME, discoverAgentsWithStarter } from "./agents.js";
 import {
@@ -71,7 +72,7 @@ const CallItem = Type.Object({
     Type.String({ description: getCallFieldSchemaDescription("cwd") }),
   ),
   initialContext: Type.Optional(
-    Type.Union([Type.Literal("empty"), Type.Literal("parent")], {
+    StringEnum(["empty", "parent"] as const, {
       description: getCallFieldSchemaDescription("initialContext"),
       default: DEFAULT_INITIAL_CONTEXT,
     }),
