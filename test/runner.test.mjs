@@ -75,7 +75,7 @@ test("normalizeCompletedResult treats agent_end with final assistant output as s
     errorMessage: "Command exited with code 1",
     stderr: "Command exited with code 1",
     sawAgentEnd: true,
-    toolErrors: ["Command exited with code 1"],
+    pendingToolError: "Command exited with code 1",
     messages: [
       {
         role: "assistant",

@@ -88,18 +88,15 @@ function addToolError(result, event) {
   if (!event?.isError) return;
   const text = getTextContent(event.result?.content);
   if (!text) return;
-  result.toolErrors ??= [];
-  if (!result.toolErrors.includes(text)) result.toolErrors.push(text);
+  result.pendingToolError = text;
 }
 
 export function hasAttributedToolError(result) {
   if (result?.stopReason !== "error") return false;
   const errorMessage = typeof result.errorMessage === "string" ? result.errorMessage.trim() : "";
-  if (!errorMessage || !Array.isArray(result.toolErrors)) return false;
-
-  return result.toolErrors.some((toolError) =>
-    typeof toolError === "string" && toolError.trim() === errorMessage
-  );
+  const pendingToolError =
+    typeof result.pendingToolError === "string" ? result.pendingToolError.trim() : "";
+  return Boolean(errorMessage && pendingToolError && pendingToolError === errorMessage);
 }
 
 export function processPiEvent(event, result) {
@@ -107,9 +104,11 @@ export function processPiEvent(event, result) {
 
   switch (event.type) {
     case "message_end":
+      if (event.message?.role === "assistant") result.pendingToolError = undefined;
       return addAssistantMessage(result, event.message);
 
     case "turn_end":
+      if (event.message?.role === "assistant") result.pendingToolError = undefined;
       return addAssistantMessage(result, event.message);
 
     case "agent_end":

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   getFinalAssistantText,
   getProcessErrorText,
+  hasAttributedToolError,
   getResultSummaryText,
   processPiEvent,
   processPiJsonLine,
@@ -48,7 +49,7 @@ test("repro: captures final assistant output from agent_end after non-zero tool 
   assert.equal(result.messages.length, 2);
   assert.equal(result.stopReason, "error");
   assert.equal(result.errorMessage, "Command exited with code 1");
-  assert.deepEqual(result.toolErrors, ["Command exited with code 1"]);
+  assert.equal(result.pendingToolError, "Command exited with code 1");
   assert.equal(result.usage.turns, 2);
   assert.equal(
     getFinalAssistantText(result.messages),
@@ -165,6 +166,32 @@ test("stderr remains a fallback only for error results", () => {
   failedResult.exitCode = 1;
   failedResult.stderr = "warning on stderr";
   assert.equal(getResultSummaryText(failedResult), "warning on stderr");
+});
+
+test("later assistant events invalidate pending tool-error attribution", () => {
+  const result = makeResult();
+  processPiEvent(
+    {
+      type: "tool_execution_end",
+      isError: true,
+      result: { content: [{ type: "text", text: "Connection reset" }] },
+    },
+    result,
+  );
+  assert.equal(result.pendingToolError, "Connection reset");
+
+  const message = {
+    role: "assistant",
+    content: [{ type: "text", text: "Partial answer" }],
+    stopReason: "error",
+    errorMessage: "Connection reset",
+    timestamp: 1,
+  };
+  processPiEvent({ type: "message_end", message }, result);
+  processPiEvent({ type: "agent_end", messages: [message] }, result);
+
+  assert.equal(result.pendingToolError, undefined);
+  assert.equal(hasAttributedToolError(result), false);
 });
 
 test("provider errors remain visible alongside partial assistant text", () => {

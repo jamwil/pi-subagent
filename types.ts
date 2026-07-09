@@ -49,8 +49,8 @@ export interface SingleResult {
 	errorMessage?: string;
 	sawAgentEnd?: boolean;
 	sawAgentSettled?: boolean;
-	/** Error text captured from failed child tool executions for terminal-status attribution. */
-	toolErrors?: string[];
+	/** Immediately pending failed-tool text for terminal-status attribution. */
+	pendingToolError?: string;
 	/** Process-level failures that should not be normalized away by semantic assistant completion. */
 	processError?: boolean;
 }
@@ -94,7 +94,7 @@ export function hasFinalAssistantOutput(r: Pick<SingleResult, "messages">): bool
 
 /** Whether the child semantically completed the run successfully. */
 export function hasSemanticCompletion(
-	r: Pick<SingleResult, "messages" | "sawAgentEnd" | "stopReason" | "errorMessage" | "toolErrors">,
+	r: Pick<SingleResult, "messages" | "sawAgentEnd" | "stopReason" | "errorMessage" | "pendingToolError">,
 ): boolean {
 	if (!r.sawAgentEnd || !hasFinalAssistantOutput(r)) return false;
 	if (r.stopReason === "aborted") return false;
