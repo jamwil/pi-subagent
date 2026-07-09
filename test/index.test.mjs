@@ -62,6 +62,13 @@ function createContext(cwd, trusted) {
 test("subagent schema uses a Google-compatible initialContext enum", () => {
   const harness = createPiHarness();
   const schema = harness.tools.get("subagent").parameters;
+  assert.equal(schema.properties.calls.minItems, 1);
+  assert.equal(schema.properties.calls.maxItems, 8);
+  assert.equal(schema.properties.calls.items.properties.agent.minLength, 1);
+  assert.equal(schema.properties.calls.items.properties.prompt.minLength, 1);
+  assert.equal(schema.properties.calls.items.properties.session.minLength, 1);
+  assert.equal(schema.properties.calls.items.properties.session.maxLength, 120);
+
   const initialContext = schema.properties.calls.items.properties.initialContext;
 
   assert.equal(initialContext.type, "string");
@@ -74,6 +81,12 @@ test("subagent schema uses a Google-compatible initialContext enum", () => {
   assert.equal(timeout.type, "integer");
   assert.equal(timeout.minimum, 1);
   assert.equal(timeout.maximum > 1, true);
+});
+
+test("registers both cycle-prevention CLI flag forms", () => {
+  const harness = createPiHarness();
+  assert.equal(harness.flags.get("subagent-prevent-cycles").type, "boolean");
+  assert.equal(harness.flags.get("no-subagent-prevent-cycles").type, "boolean");
 });
 
 test("implicit Pi trust does not enable project-only agents", async () => {

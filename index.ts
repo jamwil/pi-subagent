@@ -67,15 +67,23 @@ const MAX_TIMEOUT_SECONDS = Math.floor(2_147_483_647 / 1000);
 const CallItem = Type.Object({
   agent: Type.String({
     description: getCallFieldSchemaDescription("agent"),
+    minLength: 1,
   }),
   prompt: Type.String({
     description: getCallFieldSchemaDescription("prompt"),
+    minLength: 1,
   }),
   model: Type.Optional(
-    Type.String({ description: getCallFieldSchemaDescription("model") }),
+    Type.String({
+      description: getCallFieldSchemaDescription("model"),
+      minLength: 1,
+    }),
   ),
   cwd: Type.Optional(
-    Type.String({ description: getCallFieldSchemaDescription("cwd") }),
+    Type.String({
+      description: getCallFieldSchemaDescription("cwd"),
+      minLength: 1,
+    }),
   ),
   initialContext: Type.Optional(
     StringEnum(["empty", "parent"] as const, {
@@ -86,6 +94,8 @@ const CallItem = Type.Object({
   session: Type.Optional(
     Type.String({
       description: getCallFieldSchemaDescription("session"),
+      minLength: 1,
+      maxLength: SESSION_HANDLE_MAX_LENGTH,
     }),
   ),
   timeout: Type.Optional(
@@ -100,6 +110,8 @@ const CallItem = Type.Object({
 const SubagentParams = Type.Object({
   calls: Type.Array(CallItem, {
     description: CALLS_SCHEMA_DESCRIPTION,
+    minItems: 1,
+    maxItems: MAX_CALLS,
   }),
 });
 
@@ -667,6 +679,10 @@ export default function (pi: ExtensionAPI) {
   pi.registerFlag("subagent-prevent-cycles", {
     description:
       "Block delegating to agents already in the current delegation stack (default: true).",
+    type: "boolean",
+  });
+  pi.registerFlag("no-subagent-prevent-cycles", {
+    description: "Disable subagent delegation cycle prevention.",
     type: "boolean",
   });
 

@@ -190,7 +190,7 @@ The tool is named `subagent` and accepts one top-level `calls` array. Use the sa
 }
 ```
 
-Each call supports:
+A tool invocation accepts between 1 and 8 calls. Each call supports:
 
 | Field | Required | Default | Description |
 | --- | --- | --- | --- |
@@ -199,8 +199,8 @@ Each call supports:
 | `model` | No | Agent/default Pi model | Model to use for this call. Overrides the agent file's default model. |
 | `cwd` | No | Parent cwd | Working directory for this subagent process. |
 | `initialContext` | No | `"empty"` | `"empty"` starts a newly-created child conversation without parent history. `"parent"` seeds a newly-created child conversation from the current parent session snapshot. Existing named sessions ignore this field. |
-| `session` | No | — | Logical handle for a persistent child Pi session. Use this for multi-turn specialist work. Requires a persisted parent Pi session. |
-| `timeout` | No | Unlimited | Positive integer wall-clock timeout in seconds for this call. On expiry, partial output is preserved and the call fails. |
+| `session` | No | — | Logical handle of at most 120 characters for a persistent child Pi session. Use this for multi-turn specialist work. Requires a persisted parent Pi session. |
+| `timeout` | No | Unlimited | Positive integer wall-clock timeout in seconds for this call (maximum 2,147,483). On expiry, partial output is preserved and the call fails. |
 
 #### One ephemeral call
 
