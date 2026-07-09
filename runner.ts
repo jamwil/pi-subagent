@@ -485,7 +485,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
 
       const flushLine = (line: string) => {
         if (processPiJsonLine(line, result)) emitUpdate();
-        maybeFinishFromAgentEnd();
+        maybeFinishFromSettlement();
       };
 
       const flushBufferedLines = (text: string) => {
@@ -494,18 +494,17 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         }
       };
 
-      const maybeFinishFromAgentEnd = () => {
-        if (!result.sawAgentEnd || didClose || settled) return;
-        clearRunTimeoutTimer();
+      const maybeFinishFromSettlement = () => {
+        if (!result.sawAgentSettled || didClose || settled) return;
         if (session) {
           // Named sessions persist child history. Let Pi exit naturally so its
           // session file is fully flushed before the parent reports completion.
           if (!persistentSessionExitTimer) {
             persistentSessionExitTimer = setTimeout(() => {
-              if (didClose || settled || !result.sawAgentEnd) return;
+              if (didClose || settled || !result.sawAgentSettled) return;
               result.processError = true;
               result.stopReason = "error";
-              result.errorMessage = `Named subagent session did not exit within ${PERSISTENT_SESSION_EXIT_TIMEOUT_MS}ms after completing; terminated to avoid hanging.`;
+              result.errorMessage = `Named subagent session did not exit within ${PERSISTENT_SESSION_EXIT_TIMEOUT_MS}ms after settling; terminated to avoid hanging.`;
               if (!result.stderr.includes(result.errorMessage)) {
                 result.stderr += `${result.stderr ? "\n" : ""}${result.errorMessage}`;
               }
@@ -518,7 +517,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         }
         clearSemanticCompletionTimer();
         semanticCompletionTimer = setTimeout(() => {
-          if (didClose || settled || !result.sawAgentEnd) return;
+          if (didClose || settled || !result.sawAgentSettled) return;
           if (buffer.trim()) {
             flushBufferedLines(buffer);
             buffer = "";

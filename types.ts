@@ -48,6 +48,7 @@ export interface SingleResult {
 	stopReason?: string;
 	errorMessage?: string;
 	sawAgentEnd?: boolean;
+	sawAgentSettled?: boolean;
 	/** Error text captured from failed child tool executions for terminal-status attribution. */
 	toolErrors?: string[];
 	/** Process-level failures that should not be normalized away by semantic assistant completion. */

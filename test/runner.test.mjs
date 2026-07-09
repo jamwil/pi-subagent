@@ -321,6 +321,60 @@ test("runAgent returns immediately when the signal is already aborted", async ()
   }
 });
 
+test("runAgent waits for agent_settled across multiple low-level runs", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-settled-"));
+  const harnessPath = path.join(tmpDir, "settled-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      const intermediate = { role: "assistant", content: [{ type: "text", text: "intermediate" }], stopReason: "stop", timestamp: 1 };
+      process.stdout.write(JSON.stringify({ type: "agent_end", messages: [intermediate] }) + "\\n");
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const final = { role: "assistant", content: [{ type: "text", text: "final" }], stopReason: "stop", timestamp: 2 };
+      process.stdout.write(JSON.stringify({ type: "message_end", message: final }) + "\\n");
+      process.stdout.write(JSON.stringify({ type: "agent_end", messages: [final] }) + "\\n");
+      process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+      setInterval(() => {}, 1000);
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const result = await runAgent({
+        cwd: process.cwd(),
+        agents: [{ name: "retry", description: "retry", source: "user", systemPrompt: "" }],
+        callIndex: 0,
+        agentName: "retry",
+        prompt: "hello",
+        initialContext: "empty",
+        parentDepth: 0,
+        parentAgentStack: [],
+        maxDepth: 3,
+        preventCycles: true,
+        makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+      });
+      process.stdout.write(JSON.stringify(result));
+    }`,
+  );
+
+  try {
+    const result = JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.sawAgentSettled, true);
+    assert.deepEqual(
+      result.messages.map((message) => message.content[0].text),
+      ["intermediate", "final"],
+    );
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("runAgent delivers CLI-like prompts verbatim through stdin", () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-stdin-"));

@@ -131,6 +131,16 @@ test("falls back to the latest assistant message that contains text", () => {
   assert.equal(getFinalAssistantText(result.messages), "Complete answer");
 });
 
+test("records agent settlement separately from low-level agent_end", () => {
+  const result = makeResult();
+  processPiEvent({ type: "agent_end", messages: [] }, result);
+  assert.equal(result.sawAgentEnd, true);
+  assert.equal(result.sawAgentSettled, undefined);
+
+  processPiEvent({ type: "agent_settled" }, result);
+  assert.equal(result.sawAgentSettled, true);
+});
+
 test("non-zero exit code does not hide the final assistant text", () => {
   const result = makeResult();
   result.exitCode = 1;

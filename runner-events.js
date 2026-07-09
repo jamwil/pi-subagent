@@ -120,6 +120,10 @@ export function processPiEvent(event, result) {
       addToolError(result, event);
       return false;
 
+    case "agent_settled":
+      result.sawAgentSettled = true;
+      return false;
+
     default:
       return false;
   }
