@@ -65,7 +65,6 @@ function addAssistantMessage(result, message) {
   const { signature, bytes } = serialized;
   const seen = getSeenMessageSignatures(result);
   if (seen.has(signature)) return false;
-  seen.add(signature);
 
   const capture = getCapturedMessageState(result);
   while (
@@ -83,6 +82,7 @@ function addAssistantMessage(result, message) {
     return false;
   }
 
+  seen.add(signature);
   result.messages.push(message);
   capture.signatures.push(signature);
   capture.sizes.push(bytes);

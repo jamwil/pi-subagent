@@ -172,8 +172,13 @@ test("bounds retained assistant messages and reports capture truncation", () => 
   };
 
   processPiEvent({ type: "message_end", message: oversized }, result);
+  processPiEvent({
+    type: "message_end",
+    message: { ...oversized, timestamp: 2 },
+  }, result);
 
   assert.equal(result.messages.length, 0);
+  assert.equal(result.__seenMessageSignatures.size, 0);
   assert.equal(result.captureTruncated, true);
   assert.match(getResultSummaryText(result), /capture limit/);
 });
