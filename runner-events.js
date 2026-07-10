@@ -3,8 +3,10 @@
  */
 
 import { createHash } from "node:crypto";
+import { StringDecoder } from "node:string_decoder";
 
 const MAX_CAPTURED_MESSAGE_BYTES = 5 * 1024 * 1024;
+const TRUNCATION_MARKER = "\n\n[Subagent response truncated during capture]";
 
 function getSeenMessageSignatures(result) {
   if (!Object.prototype.hasOwnProperty.call(result, "__seenMessageSignatures")) {
@@ -49,18 +51,56 @@ function updateAssistantMetadata(result, message) {
   if (message.errorMessage) result.errorMessage = message.errorMessage;
 }
 
+function truncateUtf8(text, maxBytes) {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= maxBytes) return text;
+  return new StringDecoder("utf8").write(bytes.subarray(0, maxBytes));
+}
+
+function compactOversizedAssistantMessage(message) {
+  const text = getTextContent(message.content);
+  if (!text) return null;
+  const markerBytes = Buffer.byteLength(TRUNCATION_MARKER, "utf8");
+  const compactText =
+    Buffer.byteLength(text, "utf8") > MAX_CAPTURED_MESSAGE_BYTES - markerBytes - 1024
+      ? `${truncateUtf8(text, MAX_CAPTURED_MESSAGE_BYTES - markerBytes - 1024)}${TRUNCATION_MARKER}`
+      : text;
+  return {
+    role: "assistant",
+    content: [{ type: "text", text: compactText }],
+    model: message.model,
+    stopReason: message.stopReason,
+    errorMessage: message.errorMessage,
+    timestamp: message.timestamp,
+    usage: message.usage,
+  };
+}
+
 function addAssistantMessage(result, message) {
   if (!message || message.role !== "assistant") return false;
 
   updateAssistantMetadata(result, message);
 
-  const serialized = serializeMessage(message);
+  let capturedMessage = message;
+  let serialized = serializeMessage(capturedMessage);
   if (serialized.error) {
     result.captureTruncated = true;
     result.processError = true;
     result.stopReason = "error";
     result.errorMessage = `Could not safely capture a subagent message: ${serialized.error}`;
     return false;
+  }
+  if (serialized.bytes > MAX_CAPTURED_MESSAGE_BYTES) {
+    result.captureTruncated = true;
+    capturedMessage = compactOversizedAssistantMessage(message);
+    if (!capturedMessage) return false;
+    serialized = serializeMessage(capturedMessage);
+    if (serialized.error) {
+      result.processError = true;
+      result.stopReason = "error";
+      result.errorMessage = `Could not safely capture a subagent message: ${serialized.error}`;
+      return false;
+    }
   }
   const { signature, bytes } = serialized;
   const seen = getSeenMessageSignatures(result);
@@ -83,7 +123,7 @@ function addAssistantMessage(result, message) {
   }
 
   seen.add(signature);
-  result.messages.push(message);
+  result.messages.push(capturedMessage);
   capture.signatures.push(signature);
   capture.sizes.push(bytes);
   capture.totalBytes += bytes;

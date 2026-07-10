@@ -167,7 +167,7 @@ test("bounds retained assistant messages and reports capture truncation", () => 
   const result = makeResult();
   const oversized = {
     role: "assistant",
-    content: [{ type: "text", text: "x".repeat(5 * 1024 * 1024) }],
+    content: [{ type: "toolCall", id: "large", name: "test", arguments: { value: "x".repeat(5 * 1024 * 1024) } }],
     timestamp: 1,
   };
 
@@ -178,9 +178,27 @@ test("bounds retained assistant messages and reports capture truncation", () => 
   }, result);
 
   assert.equal(result.messages.length, 0);
-  assert.equal(result.__seenMessageSignatures.size, 0);
+  assert.equal(result.__seenMessageSignatures?.size ?? 0, 0);
   assert.equal(result.captureTruncated, true);
   assert.match(getResultSummaryText(result), /capture limit/);
+});
+
+test("retains bounded text from an oversized final assistant response", () => {
+  const result = makeResult();
+  const message = {
+    role: "assistant",
+    content: [{ type: "text", text: "x".repeat(6 * 1024 * 1024) }],
+    stopReason: "stop",
+    timestamp: 1,
+  };
+
+  processPiEvent({ type: "agent_end", messages: [message] }, result);
+
+  assert.equal(result.sawAgentEnd, true);
+  assert.equal(result.messages.length, 1);
+  assert.equal(result.captureTruncated, true);
+  assert.ok(Buffer.byteLength(JSON.stringify(result.messages[0]), "utf8") <= 5 * 1024 * 1024);
+  assert.match(getFinalAssistantText(result.messages), /\[Subagent response truncated during capture\]$/);
 });
 
 test("non-zero exit code does not hide the final assistant text", () => {
