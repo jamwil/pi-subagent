@@ -267,6 +267,10 @@ export interface RunAgentOptions {
  *
  * Returns a SingleResult even on failure (exitCode > 0, stderr populated).
  */
+export function isSameWorkingDirectory(left: string, right: string): boolean {
+  return fs.realpathSync(left) === fs.realpathSync(right);
+}
+
 export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
   const {
     cwd,
@@ -394,7 +398,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       session,
       persistentSessionDir,
       callModel,
-      path.resolve(callCwd ?? cwd) === path.resolve(cwd),
+      isSameWorkingDirectory(callCwd ?? cwd, cwd),
     );
 
     const exitCode = await new Promise<number>((resolve) => {

@@ -223,6 +223,32 @@ test("normalizeCompletedResult preserves settled completion when teardown is abo
   assert.equal(isResultError(result), false);
 });
 
+test("normalizeCompletedResult preserves settled attributed tool errors on teardown abort", () => {
+  const result = makeResult({
+    exitCode: 130,
+    stopReason: "error",
+    errorMessage: "Command exited with code 1",
+    stderr: "Command exited with code 1",
+    pendingToolError: "Command exited with code 1",
+    sawAgentEnd: true,
+    sawAgentSettled: true,
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "No matches found; exit code 1 was expected." }],
+        timestamp: 1,
+      },
+    ],
+  });
+
+  normalizeCompletedResult(result, true);
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stopReason, undefined);
+  assert.equal(result.errorMessage, undefined);
+  assert.equal(isResultSuccess(result), true);
+});
+
 test("normalizeCompletedResult rejects aborted intermediate agent_end output", () => {
   const result = makeResult({
     exitCode: 130,
@@ -293,6 +319,25 @@ test("classifies only unexpected signal exits as process failures", async () => 
     assert.equal(getUnexpectedSignalFailure(null, "SIGTERM", false, 1), null);
   } finally {
     cleanup();
+  }
+});
+
+test("compares working directories by canonical path", {
+  skip: process.platform === "win32",
+}, async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-same-cwd-"));
+  const physical = path.join(tmpDir, "physical");
+  const alias = path.join(tmpDir, "alias");
+  fs.mkdirSync(physical);
+  fs.symlinkSync(physical, alias, "dir");
+
+  try {
+    const { isSameWorkingDirectory } = await import(moduleUrl);
+    assert.equal(isSameWorkingDirectory(physical, alias), true);
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 

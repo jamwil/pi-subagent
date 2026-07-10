@@ -128,18 +128,20 @@ export function isResultError(r: SingleResult): boolean {
 /** Reconcile process exit status with semantic completion observed from Pi's event stream. */
 export function normalizeCompletedResult(result: SingleResult, wasAborted: boolean): SingleResult {
 	const hasSemanticSuccess = hasSemanticCompletion(result);
-	const hasTerminalOutput = Boolean(result.sawAgentEnd) && hasFinalAssistantOutput(result);
-
+	const completedBeforeAbort =
+		result.sawAgentSettled &&
+		(hasSemanticSuccess ||
+			(result.stopReason === "aborted" && result.sawAgentEnd && hasFinalAssistantOutput(result)));
 	if (wasAborted) {
-		if (
-			result.sawAgentSettled &&
-			hasTerminalOutput &&
-			!result.processError &&
-			result.stopReason !== "error"
-		) {
+		if (completedBeforeAbort && !result.processError) {
 			result.exitCode = 0;
-			if (result.stopReason === "aborted") result.stopReason = undefined;
-			if (result.errorMessage === "Subagent was aborted.") {
+			if (result.stopReason === "aborted" || result.stopReason === "error") {
+				result.stopReason = undefined;
+			}
+			if (
+				result.errorMessage === "Subagent was aborted." ||
+				result.errorMessage === result.stderr.trim()
+			) {
 				result.errorMessage = undefined;
 			}
 		} else if (result.processError) {
