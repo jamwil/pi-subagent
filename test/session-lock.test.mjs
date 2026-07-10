@@ -30,6 +30,7 @@ test("session lock acquisition rejects an existing active lock", () => {
   try {
     const first = acquireSessionLock(target(tmpDir));
     assert.ok(first.lock);
+    assert.deepEqual(fs.readdirSync(first.lock.path), ["owner.json"]);
 
     const second = acquireSessionLock(target(tmpDir));
     assert.match(second.error ?? "", /already running/);
@@ -53,6 +54,23 @@ test("session lock acquisition reports stale locks without deleting them", () =>
     const result = acquireSessionLock(target(tmpDir));
     assert.match(result.error ?? "", /appears stale/);
     assert.equal(fs.existsSync(lockPath), true);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("malformed owner metadata uses the owner file timestamp for staleness", () => {
+  const tmpDir = makeTempDir();
+  try {
+    const lockPath = path.join(tmpDir, "subagent.test.lock");
+    const ownerPath = path.join(lockPath, "owner.json");
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(ownerPath, "partial json");
+    const staleDate = new Date(Date.now() - SESSION_LOCK_STALE_MS - 1000);
+    fs.utimesSync(ownerPath, staleDate, staleDate);
+
+    const result = acquireSessionLock(target(tmpDir));
+    assert.match(result.error ?? "", /appears stale/);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

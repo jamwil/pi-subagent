@@ -9,7 +9,13 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent";
+import {
+  type ExtensionAPI,
+  getAgentDir,
+  ProjectTrustStore,
+  SessionManager,
+} from "@earendil-works/pi-coding-agent";
+import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { type AgentConfig, STARTER_AGENT_NAME, discoverAgentsWithStarter } from "./agents.js";
 import {
@@ -19,9 +25,10 @@ import {
   formatSubagentUsageErrorExample,
   getCallFieldSchemaDescription,
 } from "./contract.js";
+import { formatCallsSummary, writeOutputArtifact } from "./output.js";
 import { renderCall, renderResult } from "./render.js";
+import { parseInheritedCliArgs } from "./runner-cli.js";
 import { ensureDefaultSessionDir, getDefaultSessionDirPath } from "./session-paths.js";
-import { getResultSummaryText } from "./runner-events.js";
 import { mapConcurrent, runAgent } from "./runner.js";
 import { acquireSessionLocks, releaseSessionLocks, type SessionLockTarget } from "./session-lock.js";
 import {
@@ -32,7 +39,6 @@ import {
   DEFAULT_INITIAL_CONTEXT,
   emptyUsage,
   isResultError,
-  isResultSuccess,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -52,6 +58,7 @@ const SUBAGENT_TEMP_PARENT_SESSION_ENV = "PI_SUBAGENT_TEMP_PARENT_SESSION";
 const SESSION_ID_NAMESPACE = "pi-subagent/v1";
 const SESSION_ID_PREFIX = "subagent.";
 const SESSION_HANDLE_MAX_LENGTH = 120;
+const MAX_TIMEOUT_SECONDS = Math.floor(2_147_483_647 / 1000);
 
 // ---------------------------------------------------------------------------
 // Tool parameter schema
@@ -60,18 +67,26 @@ const SESSION_HANDLE_MAX_LENGTH = 120;
 const CallItem = Type.Object({
   agent: Type.String({
     description: getCallFieldSchemaDescription("agent"),
+    minLength: 1,
   }),
   prompt: Type.String({
     description: getCallFieldSchemaDescription("prompt"),
+    minLength: 1,
   }),
   model: Type.Optional(
-    Type.String({ description: getCallFieldSchemaDescription("model") }),
+    Type.String({
+      description: getCallFieldSchemaDescription("model"),
+      minLength: 1,
+    }),
   ),
   cwd: Type.Optional(
-    Type.String({ description: getCallFieldSchemaDescription("cwd") }),
+    Type.String({
+      description: getCallFieldSchemaDescription("cwd"),
+      minLength: 1,
+    }),
   ),
   initialContext: Type.Optional(
-    Type.Union([Type.Literal("empty"), Type.Literal("parent")], {
+    StringEnum(["empty", "parent"] as const, {
       description: getCallFieldSchemaDescription("initialContext"),
       default: DEFAULT_INITIAL_CONTEXT,
     }),
@@ -79,6 +94,15 @@ const CallItem = Type.Object({
   session: Type.Optional(
     Type.String({
       description: getCallFieldSchemaDescription("session"),
+      minLength: 1,
+      maxLength: SESSION_HANDLE_MAX_LENGTH,
+    }),
+  ),
+  timeout: Type.Optional(
+    Type.Integer({
+      description: getCallFieldSchemaDescription("timeout"),
+      minimum: 1,
+      maximum: MAX_TIMEOUT_SECONDS,
     }),
   ),
 });
@@ -86,6 +110,8 @@ const CallItem = Type.Object({
 const SubagentParams = Type.Object({
   calls: Type.Array(CallItem, {
     description: CALLS_SCHEMA_DESCRIPTION,
+    minItems: 1,
+    maxItems: MAX_CALLS,
   }),
 });
 
@@ -115,6 +141,7 @@ interface NormalizedCall {
   initialContext: InitialContext;
   sessionHandle?: string;
   session?: SubagentSessionDetails;
+  timeoutMs?: number;
 }
 
 interface NormalizedCallsResult {
@@ -198,6 +225,24 @@ function getMaxDepthFlagFromArgv(argv: string[]): string | null {
     }
   }
   return null;
+}
+
+export function getProjectTrustOverrideFromArgv(argv: string[]): boolean | null {
+  return parseInheritedCliArgs(argv).projectTrustOverride ?? null;
+}
+
+function shouldIncludeProjectAgents(cwd: string, contextTrusted: boolean): boolean {
+  if (!contextTrusted) return false;
+
+  const trustOverride = getProjectTrustOverrideFromArgv(process.argv);
+  if (trustOverride !== null) return trustOverride;
+
+  try {
+    return new ProjectTrustStore(getAgentDir()).get(cwd) === true;
+  } catch (error) {
+    console.warn(`[pi-subagent] Could not verify project trust; project agents are disabled: ${String(error)}`);
+    return false;
+  }
 }
 
 function getPreventCyclesFlagFromArgv(
@@ -322,10 +367,16 @@ function resolveDelegationDepthConfig(pi: ExtensionAPI): DelegationDepthConfig {
 }
 
 function makeDetailsFactory(projectAgentsDir: string | null) {
-  return (results: SingleResult[]): SubagentDetails => ({
+  return (results: SingleResult[], failed = false): SubagentDetails => ({
+    kind: "pi-subagent",
     projectAgentsDir,
     results,
+    ...(failed ? { failed: true as const } : {}),
   });
+}
+
+export function resolveCallCwd(defaultCwd: string, rawCwd?: string): string {
+  return fs.realpathSync(path.resolve(defaultCwd, rawCwd ?? "."));
 }
 
 function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsResult {
@@ -373,6 +424,21 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
       return { error: `calls[${index}].initialContext must be "empty" or "parent".` };
     }
 
+    let timeoutMs: number | undefined;
+    if (call.timeout !== undefined) {
+      if (
+        typeof call.timeout !== "number" ||
+        !Number.isInteger(call.timeout) ||
+        call.timeout < 1 ||
+        call.timeout > MAX_TIMEOUT_SECONDS
+      ) {
+        return {
+          error: `calls[${index}].timeout must be an integer between 1 and ${MAX_TIMEOUT_SECONDS} seconds when provided.`,
+        };
+      }
+      timeoutMs = call.timeout * 1000;
+    }
+
     let effectiveCwd: string;
     if (call.cwd !== undefined) {
       if (typeof call.cwd !== "string" || call.cwd.trim().length === 0) {
@@ -383,11 +449,16 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
         if (!fs.statSync(effectiveCwd).isDirectory()) {
           return { error: `calls[${index}].cwd is not a directory: ${effectiveCwd}` };
         }
+        effectiveCwd = resolveCallCwd(defaultCwd, call.cwd);
       } catch {
         return { error: `calls[${index}].cwd does not exist or is not accessible: ${effectiveCwd}` };
       }
     } else {
-      effectiveCwd = path.resolve(defaultCwd);
+      try {
+        effectiveCwd = resolveCallCwd(defaultCwd);
+      } catch {
+        return { error: `Parent cwd does not exist or is not accessible: ${path.resolve(defaultCwd)}` };
+      }
     }
 
     let sessionHandle: string | undefined;
@@ -414,6 +485,7 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
       effectiveCwd,
       initialContext,
       sessionHandle,
+      timeoutMs,
     });
   }
 
@@ -598,21 +670,6 @@ function makePlaceholderResult(call: NormalizedCall): SingleResult {
   };
 }
 
-function formatResultLabel(result: SingleResult, fallbackIndex: number): string {
-  const displayIndex = (result.callIndex ?? fallbackIndex) + 1;
-  const sessionText = result.session ? ` session=${oneLine(result.session.handle)}` : "";
-  return `${displayIndex}: ${result.agent}${sessionText}`;
-}
-
-function formatCallsSummary(results: SingleResult[]): string {
-  const successCount = results.filter((r) => isResultSuccess(r)).length;
-  const summaries = results.map((r, index) => {
-    const status = isResultError(r) ? "failed" : "completed";
-    return `[${formatResultLabel(r, index)}] ${status}:\n${getResultSummaryText(r)}`;
-  });
-  return `${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n")}`;
-}
-
 // ---------------------------------------------------------------------------
 // Extension entry point
 // ---------------------------------------------------------------------------
@@ -627,11 +684,38 @@ export default function (pi: ExtensionAPI) {
       "Block delegating to agents already in the current delegation stack (default: true).",
     type: "boolean",
   });
+  pi.registerFlag("no-subagent-prevent-cycles", {
+    description: "Disable subagent delegation cycle prevention.",
+    type: "boolean",
+  });
 
   const depthConfig = resolveDelegationDepthConfig(pi);
   const { currentDepth, maxDepth, canDelegate, ancestorAgentStack, preventCycles } =
     depthConfig;
   const activeSessionIds = new Set<string>();
+  const outputArtifactDirs = new Set<string>();
+
+  const saveFullOutput = (content: string): string | null => {
+    try {
+      const artifact = writeOutputArtifact(content);
+      outputArtifactDirs.add(artifact.dir);
+      return artifact.filePath;
+    } catch (error) {
+      console.warn(`[pi-subagent] Could not save truncated output: ${String(error)}`);
+      return null;
+    }
+  };
+
+  pi.on("session_shutdown", () => {
+    for (const dir of outputArtifactDirs) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // Best-effort cleanup; the OS temp directory remains the fallback lifecycle.
+      }
+    }
+    outputArtifactDirs.clear();
+  });
 
   let discoveredAgents: AgentConfig[] = [];
 
@@ -639,7 +723,10 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     if (!canDelegate) return;
 
-    const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
+    const starterDiscovery = discoverAgentsWithStarter(
+      ctx.cwd,
+      shouldIncludeProjectAgents(ctx.cwd, ctx.isProjectTrusted()),
+    );
     const discovery = starterDiscovery.discovery;
     discoveredAgents = discovery.agents;
 
@@ -683,6 +770,14 @@ export default function (pi: ExtensionAPI) {
     };
   });
 
+  pi.on("tool_result", (event) => {
+    if (event.toolName !== "subagent") return;
+    const details = event.details as Partial<SubagentDetails> | undefined;
+    if (details?.kind === "pi-subagent" && details.failed === true) {
+      return { isError: true };
+    }
+  });
+
   // Register the subagent tool.
   if (canDelegate) {
     pi.registerTool({
@@ -692,7 +787,10 @@ export default function (pi: ExtensionAPI) {
       parameters: SubagentParams,
 
       async execute(_toolCallId, params, signal, onUpdate, ctx) {
-        const starterDiscovery = discoverAgentsWithStarter(ctx.cwd);
+        const starterDiscovery = discoverAgentsWithStarter(
+          ctx.cwd,
+          shouldIncludeProjectAgents(ctx.cwd, ctx.isProjectTrusted()),
+        );
         const discovery = starterDiscovery.discovery;
         const { agents } = discovery;
         const makeDetails = makeDetailsFactory(discovery.projectAgentsDir);
@@ -701,8 +799,7 @@ export default function (pi: ExtensionAPI) {
         if (normalized.error || !normalized.calls) {
           return {
             content: [{ type: "text", text: normalized.error ?? "Invalid subagent parameters." }],
-            details: makeDetails([]),
-            isError: true,
+            details: makeDetails([], true),
           };
         }
         const calls = normalized.calls;
@@ -713,8 +810,7 @@ export default function (pi: ExtensionAPI) {
         if (duplicateSessionError) {
           return {
             content: [{ type: "text", text: duplicateSessionError }],
-            details: makeDetails([]),
-            isError: true,
+            details: makeDetails([], true),
           };
         }
 
@@ -725,8 +821,7 @@ export default function (pi: ExtensionAPI) {
         if (parentSessionError) {
           return {
             content: [{ type: "text", text: parentSessionError }],
-            details: makeDetails([]),
-            isError: true,
+            details: makeDetails([], true),
           };
         }
 
@@ -752,8 +847,7 @@ Current stack: ${stackText}
 This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A).`,
                 },
               ],
-              details: makeDetails([]),
-              isError: true,
+              details: makeDetails([], true),
             };
           }
         }
@@ -764,8 +858,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         if (activeSessionError) {
           return {
             content: [{ type: "text", text: activeSessionError }],
-            details: makeDetails([]),
-            isError: true,
+            details: makeDetails([], true),
           };
         }
 
@@ -775,8 +868,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         if (lockResult.error) {
           return {
             content: [{ type: "text", text: lockResult.error }],
-            details: makeDetails([]),
-            isError: true,
+            details: makeDetails([], true),
           };
         }
 
@@ -797,8 +889,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
                   text: `Failed to inspect existing subagent sessions: ${message}`,
                 },
               ],
-              details: makeDetails([]),
-              isError: true,
+              details: makeDetails([], true),
             };
           }
 
@@ -813,8 +904,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
                     text: "Cannot run subagent calls: failed to snapshot current parent session context for calls requiring initialContext=\"parent\".",
                   },
                 ],
-                details: makeDetails([]),
-                isError: true,
+                details: makeDetails([], true),
               };
             }
             parentSessionSnapshotJsonl = snapshot;
@@ -862,15 +952,19 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
       if (!onUpdate) return;
       const running = allResults.filter((r) => r.exitCode === -1).length;
       const done = allResults.filter((r) => r.exitCode !== -1).length;
-      onUpdate({
-        content: [
-          {
-            type: "text",
-            text: `Subagents: ${done}/${allResults.length} done, ${running} running...`,
-          },
-        ],
-        details: makeDetails([...allResults]),
-      });
+      try {
+        onUpdate({
+          content: [
+            {
+              type: "text",
+              text: `Subagents: ${done}/${allResults.length} done, ${running} running...`,
+            },
+          ],
+          details: makeDetails([...allResults]),
+        });
+      } catch (error) {
+        console.warn(`[pi-subagent] Progress callback failed: ${String(error)}`);
+      }
     };
 
     let heartbeat: NodeJS.Timeout | undefined;
@@ -887,31 +981,45 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
         calls,
         MAX_CONCURRENCY,
         async (call, workerIndex) => {
-          const result = await runAgent({
-            cwd: defaultCwd,
-            agents,
-            callIndex: call.index,
-            agentName: call.agent,
-            prompt: call.prompt,
-            callModel: call.model,
-            callCwd: call.effectiveCwd,
-            initialContext: call.initialContext,
-            parentSessionSnapshotJsonl,
-            session: call.session,
-            persistentSessionDir,
-            parentDepth: currentDepth,
-            parentAgentStack: ancestorAgentStack,
-            maxDepth,
-            preventCycles,
-            signal,
-            onUpdate: (partial) => {
-              if (partial.details?.results[0]) {
-                allResults[workerIndex] = partial.details.results[0];
-                emitProgress();
-              }
-            },
-            makeDetails,
-          });
+          let result: SingleResult;
+          try {
+            result = await runAgent({
+              cwd: defaultCwd,
+              agents,
+              callIndex: call.index,
+              agentName: call.agent,
+              prompt: call.prompt,
+              callModel: call.model,
+              callCwd: call.effectiveCwd,
+              initialContext: call.initialContext,
+              parentSessionSnapshotJsonl,
+              session: call.session,
+              persistentSessionDir,
+              parentDepth: currentDepth,
+              parentAgentStack: ancestorAgentStack,
+              maxDepth,
+              preventCycles,
+              timeoutMs: call.timeoutMs,
+              signal,
+              onUpdate: (partial) => {
+                if (partial.details?.results[0]) {
+                  allResults[workerIndex] = partial.details.results[0];
+                  emitProgress();
+                }
+              },
+              makeDetails,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            result = {
+              ...makePlaceholderResult(call),
+              exitCode: 1,
+              stderr: message,
+              stopReason: "error",
+              errorMessage: message,
+              processError: true,
+            };
+          }
           allResults[workerIndex] = result;
           emitProgress();
           return result;
@@ -922,15 +1030,15 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
     }
 
     const hasErrors = results.some((r) => isResultError(r));
+    const summary = formatCallsSummary(results, saveFullOutput);
     return {
       content: [
         {
           type: "text" as const,
-          text: formatCallsSummary(results),
+          text: summary.text,
         },
       ],
-      details: makeDetails(results),
-      isError: hasErrors || undefined,
+      details: makeDetails(results, hasErrors),
     };
   }
 }

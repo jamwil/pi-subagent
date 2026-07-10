@@ -61,6 +61,21 @@ function collectText(component) {
   return [...own, ...children];
 }
 
+test("shortenPath only shortens the home directory and its descendants", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { shortenPath } = await import(moduleUrl);
+    const home = os.homedir();
+
+    assert.equal(shortenPath(home), "~");
+    assert.equal(shortenPath(path.join(home, "project", "src")), path.join("~", "project", "src"));
+    assert.equal(shortenPath(`${home}-other/project`), `${home}-other/project`);
+    assert.equal(shortenPath("relative/project"), "relative/project");
+  } finally {
+    cleanup();
+  }
+});
+
 test("expanded renderer tolerates legacy pre-prompt results with task", async () => {
   const { moduleUrl, cleanup } = createTestableRenderModule();
   try {

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { isResultError, isResultSuccess, normalizeCompletedResult } from "../types.ts";
 
@@ -11,6 +12,10 @@ function createTestableRunnerModule() {
   const modulePath = path.join(tmpDir, "runner.testable.ts");
   const source = fs
     .readFileSync(path.join(process.cwd(), "runner.ts"), "utf-8")
+    .replace(
+      'from "@earendil-works/pi-coding-agent"',
+      `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js")).href)}`,
+    )
     .replace('from "./runner-cli.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "runner-cli.js")).href)}`)
     .replace('from "./runner-events.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "runner-events.js")).href)}`)
     .replace('from "./types.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "types.ts")).href)}`);
@@ -74,6 +79,7 @@ test("normalizeCompletedResult treats agent_end with final assistant output as s
     errorMessage: "Command exited with code 1",
     stderr: "Command exited with code 1",
     sawAgentEnd: true,
+    pendingToolError: "Command exited with code 1",
     messages: [
       {
         role: "assistant",
@@ -90,6 +96,53 @@ test("normalizeCompletedResult treats agent_end with final assistant output as s
   assert.equal(result.errorMessage, undefined);
   assert.equal(isResultSuccess(result), true);
   assert.equal(isResultError(result), false);
+});
+
+test("normalizeCompletedResult preserves provider failures after partial output", () => {
+  for (const exitCode of [0, 1]) {
+    const result = makeResult({
+      exitCode,
+      stopReason: "error",
+      errorMessage: "Connection reset while streaming",
+      stderr: "Connection reset while streaming",
+      sawAgentEnd: true,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "Partial answer" }],
+          timestamp: 1,
+        },
+      ],
+    });
+
+    normalizeCompletedResult(result, false);
+
+    assert.equal(isResultSuccess(result), false);
+    assert.equal(isResultError(result), true);
+    assert.equal(result.stopReason, "error");
+    assert.equal(result.errorMessage, "Connection reset while streaming");
+  }
+});
+
+test("normalizeCompletedResult keeps aborted provider output as a failure", () => {
+  const result = makeResult({
+    exitCode: 0,
+    stopReason: "aborted",
+    errorMessage: "Request aborted",
+    sawAgentEnd: true,
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Partial answer" }],
+        timestamp: 1,
+      },
+    ],
+  });
+
+  normalizeCompletedResult(result, false);
+
+  assert.equal(isResultSuccess(result), false);
+  assert.equal(isResultError(result), true);
 });
 
 test("normalizeCompletedResult preserves process-level errors despite semantic completion", () => {
@@ -144,13 +197,14 @@ test("normalizeCompletedResult does not mask process-level errors on abort", () 
   assert.equal(isResultError(result), true);
 });
 
-test("normalizeCompletedResult preserves semantic completion when the process is aborted after agent_end", () => {
+test("normalizeCompletedResult preserves settled completion when teardown is aborted", () => {
   const result = makeResult({
     exitCode: 130,
     stopReason: "aborted",
     errorMessage: "Subagent was aborted.",
     stderr: "Subagent was aborted.",
     sawAgentEnd: true,
+    sawAgentSettled: true,
     messages: [
       {
         role: "assistant",
@@ -169,6 +223,53 @@ test("normalizeCompletedResult preserves semantic completion when the process is
   assert.equal(isResultError(result), false);
 });
 
+test("normalizeCompletedResult preserves settled attributed tool errors on teardown abort", () => {
+  const result = makeResult({
+    exitCode: 130,
+    stopReason: "error",
+    errorMessage: "Command exited with code 1",
+    stderr: "Command exited with code 1",
+    pendingToolError: "Command exited with code 1",
+    sawAgentEnd: true,
+    sawAgentSettled: true,
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "No matches found; exit code 1 was expected." }],
+        timestamp: 1,
+      },
+    ],
+  });
+
+  normalizeCompletedResult(result, true);
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.stopReason, undefined);
+  assert.equal(result.errorMessage, undefined);
+  assert.equal(isResultSuccess(result), true);
+});
+
+test("normalizeCompletedResult rejects aborted intermediate agent_end output", () => {
+  const result = makeResult({
+    exitCode: 130,
+    stopReason: "stop",
+    sawAgentEnd: true,
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Intermediate answer" }],
+        timestamp: 1,
+      },
+    ],
+  });
+
+  normalizeCompletedResult(result, true);
+
+  assert.equal(result.exitCode, 130);
+  assert.equal(result.stopReason, "aborted");
+  assert.equal(isResultError(result), true);
+});
+
 test("normalizeCompletedResult keeps aborts as errors without semantic completion", () => {
   const result = makeResult({
     exitCode: 130,
@@ -185,11 +286,59 @@ test("normalizeCompletedResult keeps aborts as errors without semantic completio
   assert.equal(isResultError(result), true);
 });
 
+test("clean process exit without agent completion is a failure", () => {
+  const result = makeResult({ exitCode: 0 });
+
+  normalizeCompletedResult(result, false);
+
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.stopReason, "error");
+  assert.match(result.errorMessage, /without completing an agent run/);
+  assert.equal(isResultError(result), true);
+});
+
 test("running results are neither success nor error", () => {
   const result = makeResult({ exitCode: -1 });
 
   assert.equal(isResultSuccess(result), false);
   assert.equal(isResultError(result), false);
+});
+
+test("classifies only unexpected signal exits as process failures", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { getUnexpectedSignalFailure } = await import(moduleUrl);
+
+    const failure = getUnexpectedSignalFailure(null, "SIGTERM", false, undefined);
+    assert.ok(failure);
+    assert.equal(failure.exitCode > 0, true);
+    assert.match(failure.message, /SIGTERM/);
+
+    assert.equal(getUnexpectedSignalFailure(1, null, false, undefined), null);
+    assert.equal(getUnexpectedSignalFailure(null, "SIGTERM", true, undefined), null);
+    assert.equal(getUnexpectedSignalFailure(null, "SIGTERM", false, 1), null);
+  } finally {
+    cleanup();
+  }
+});
+
+test("compares working directories by canonical path", {
+  skip: process.platform === "win32",
+}, async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-same-cwd-"));
+  const physical = path.join(tmpDir, "physical");
+  const alias = path.join(tmpDir, "alias");
+  fs.mkdirSync(physical);
+  fs.symlinkSync(physical, alias, "dir");
+
+  try {
+    const { isSameWorkingDirectory } = await import(moduleUrl);
+    assert.equal(isSameWorkingDirectory(physical, alias), true);
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 test("rewriteSessionHeaderCwd updates only the session header cwd", async () => {
@@ -254,6 +403,459 @@ test("runAgent returns immediately when the signal is already aborted", async ()
   }
 });
 
+test("runAgent converts synchronous spawn failures into structured results", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { runAgent } = await import(moduleUrl);
+    const result = await runAgent({
+      cwd: process.cwd(),
+      agents: [
+        {
+          name: "invalid-model",
+          description: "invalid model",
+          source: "user",
+          systemPrompt: "",
+          model: "bad\0model",
+        },
+      ],
+      callIndex: 0,
+      agentName: "invalid-model",
+      prompt: "hello",
+      initialContext: "empty",
+      parentDepth: 0,
+      parentAgentStack: [],
+      maxDepth: 3,
+      preventCycles: true,
+      makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+    });
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.processError, true);
+    assert.equal(result.stopReason, "error");
+    assert.match(result.errorMessage, /null bytes|invalid/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runAgent waits for agent_settled across multiple low-level runs", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-settled-"));
+  const harnessPath = path.join(tmpDir, "settled-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      const intermediate = { role: "assistant", content: [{ type: "text", text: "intermediate" }], stopReason: "stop", timestamp: 1 };
+      process.stdout.write(JSON.stringify({ type: "agent_end", messages: [intermediate] }) + "\\n");
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const final = { role: "assistant", content: [{ type: "text", text: "final" }], stopReason: "stop", timestamp: 2 };
+      process.stdout.write(JSON.stringify({ type: "message_end", message: final }) + "\\n");
+      process.stdout.write(JSON.stringify({ type: "agent_end", messages: [final] }) + "\\n");
+      process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+      setInterval(() => {}, 1000);
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const result = await runAgent({
+        cwd: process.cwd(),
+        agents: [{ name: "retry", description: "retry", source: "user", systemPrompt: "" }],
+        callIndex: 0,
+        agentName: "retry",
+        prompt: "hello",
+        initialContext: "empty",
+        parentDepth: 0,
+        parentAgentStack: [],
+        maxDepth: 3,
+        preventCycles: true,
+        makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+      });
+      process.stdout.write(JSON.stringify(result));
+    }`,
+  );
+
+  try {
+    const result = JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.sawAgentSettled, true);
+    assert.deepEqual(
+      result.messages.map((message) => message.content[0].text),
+      ["intermediate", "final"],
+    );
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("runAgent delivers CLI-like prompts verbatim through stdin", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-stdin-"));
+  const harnessPath = path.join(tmpDir, "stdin-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      const prompt = await new Promise((resolve) => {
+        process.stdin.once("data", (chunk) => resolve(JSON.parse(chunk.toString().trim()).message));
+      });
+      const message = {
+        role: "assistant",
+        content: [{ type: "text", text: prompt }],
+        stopReason: "stop",
+        timestamp: 1,
+      };
+      const writeEvent = async (event) => {
+        const bytes = Buffer.from(JSON.stringify(event) + "\\n");
+        const emojiOffset = bytes.indexOf(Buffer.from("😀"));
+        if (emojiOffset === -1) {
+          process.stdout.write(bytes);
+          return;
+        }
+        process.stdout.write(bytes.subarray(0, emojiOffset + 1));
+        await new Promise((resolve) => setImmediate(resolve));
+        process.stdout.write(bytes.subarray(emojiOffset + 1));
+      };
+      await writeEvent({ type: "message_end", message });
+      await writeEvent({ type: "agent_end", messages: [message] });
+      await writeEvent({ type: "agent_settled" });
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const results = [];
+      for (const prompt of ["--approve", "--help", "@/tmp/secret", "-leading", "  padded prompt  \\n", "emoji 😀 boundary"]) {
+        results.push(await runAgent({
+          cwd: process.cwd(),
+          agents: [{ name: "echo", description: "echo", source: "user", systemPrompt: "" }],
+          callIndex: 0,
+          agentName: "echo",
+          prompt,
+          initialContext: "empty",
+          parentDepth: 0,
+          parentAgentStack: [],
+          maxDepth: 3,
+          preventCycles: true,
+          makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+        }));
+      }
+      process.stdout.write(JSON.stringify(results));
+    }`,
+  );
+
+  try {
+    const results = JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    );
+
+    assert.deepEqual(
+      results.map((result) => result.messages.at(-1).content[0].text),
+      ["--approve", "--help", "@/tmp/secret", "-leading", "  padded prompt  \n", "emoji 😀 boundary"],
+    );
+    assert.equal(results.every((result) => result.exitCode === 0), true);
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("runAgent auto-cancels inherited RPC extension dialogs", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-dialog-"));
+  const harnessPath = path.join(tmpDir, "dialog-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      let buffer = "";
+      process.stdin.setEncoding("utf8");
+      for await (const chunk of process.stdin) {
+        buffer += chunk;
+        const lines = buffer.split("\\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const event = JSON.parse(line);
+          if (event.type === "prompt") {
+            process.stdout.write(JSON.stringify({ type: "extension_ui_request", id: "dialog-1", method: "confirm" }) + "\\n");
+          }
+          if (event.type === "extension_ui_response") {
+            const message = { role: "assistant", content: [{ type: "text", text: String(event.cancelled) }], stopReason: "stop", timestamp: 1 };
+            process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");
+            process.stdout.write(JSON.stringify({ type: "message_end", message }) + "\\n");
+            process.stdout.write(JSON.stringify({ type: "agent_end", messages: [message] }) + "\\n");
+            process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+          }
+        }
+      }
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const result = await runAgent({
+        cwd: process.cwd(),
+        agents: [{ name: "dialog", description: "dialog", source: "user", systemPrompt: "" }],
+        callIndex: 0,
+        agentName: "dialog",
+        prompt: "hello",
+        initialContext: "empty",
+        parentDepth: 0,
+        parentAgentStack: [],
+        maxDepth: 3,
+        preventCycles: true,
+        makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+      });
+      process.stdout.write(JSON.stringify(result));
+    }`,
+  );
+
+  try {
+    const result = JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.messages.at(-1).content[0].text, "true");
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("runAgent settles prompts handled without an agent run", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-handled-"));
+  const harnessPath = path.join(tmpDir, "handled-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      let buffer = "";
+      process.stdin.setEncoding("utf8");
+      for await (const chunk of process.stdin) {
+        buffer += chunk;
+        const lines = buffer.split("\\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const command = JSON.parse(line);
+          if (command.type === "prompt") {
+            process.stdout.write(JSON.stringify({ type: "response", command: "prompt", success: true }) + "\\n");
+          }
+          if (command.type === "get_state") {
+            process.stdout.write(JSON.stringify({ type: "response", id: command.id, command: "get_state", success: true, data: { isStreaming: false } }) + "\\n");
+          }
+        }
+      }
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const result = await runAgent({
+        cwd: process.cwd(),
+        agents: [{ name: "handled", description: "handled", source: "user", systemPrompt: "" }],
+        callIndex: 0,
+        agentName: "handled",
+        prompt: "/handled-command",
+        initialContext: "empty",
+        parentDepth: 0,
+        parentAgentStack: [],
+        maxDepth: 3,
+        preventCycles: true,
+        makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+      });
+      process.stdout.write(JSON.stringify(result));
+    }`,
+  );
+
+  try {
+    const result = JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.handledWithoutAgent, true);
+    assert.equal(result.sawAgentSettled, true);
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("runAgent does not treat an accepted streaming prompt as handled", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-accepted-"));
+  const harnessPath = path.join(tmpDir, "accepted-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      let buffer = "";
+      let finishTimer;
+      process.stdin.setEncoding("utf8");
+      for await (const chunk of process.stdin) {
+        buffer += chunk;
+        const lines = buffer.split("\\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const command = JSON.parse(line);
+          if (command.type === "prompt") {
+            process.stdout.write(JSON.stringify({ type: "response", command: "prompt", success: true }) + "\\n");
+            finishTimer = setTimeout(() => {
+              const message = { role: "assistant", content: [{ type: "text", text: "completed" }], stopReason: "stop", timestamp: 1 };
+              process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");
+              process.stdout.write(JSON.stringify({ type: "message_end", message }) + "\\n");
+              process.stdout.write(JSON.stringify({ type: "agent_end", messages: [message] }) + "\\n");
+              process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+            }, 500);
+          }
+          if (command.type === "get_state") {
+            process.stdout.write(JSON.stringify({ type: "response", id: command.id, command: "get_state", success: true, data: { isStreaming: true } }) + "\\n");
+          }
+        }
+      }
+      clearTimeout(finishTimer);
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const result = await runAgent({
+        cwd: process.cwd(),
+        agents: [{ name: "accepted", description: "accepted", source: "user", systemPrompt: "" }],
+        callIndex: 0,
+        agentName: "accepted",
+        prompt: "hello",
+        initialContext: "empty",
+        parentDepth: 0,
+        parentAgentStack: [],
+        maxDepth: 3,
+        preventCycles: true,
+        makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+      });
+      process.stdout.write(JSON.stringify(result));
+    }`,
+  );
+
+  try {
+    const result = JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.handledWithoutAgent, undefined);
+    assert.equal(result.messages.at(-1).content[0].text, "completed");
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("runAgent enforces an explicitly configured wall-clock timeout", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-timeout-"));
+  const harnessPath = path.join(tmpDir, "timeout-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      setInterval(() => {}, 1000);
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const result = await runAgent({
+        cwd: process.cwd(),
+        agents: [{ name: "hang", description: "hang", source: "user", systemPrompt: "" }],
+        callIndex: 0,
+        agentName: "hang",
+        prompt: "hello",
+        initialContext: "empty",
+        parentDepth: 0,
+        parentAgentStack: [],
+        maxDepth: 3,
+        preventCycles: true,
+        timeoutMs: 100,
+        makeDetails: (results) => ({ kind: "pi-subagent", projectAgentsDir: null, results }),
+      });
+      process.stdout.write(JSON.stringify(result));
+    }`,
+  );
+
+  try {
+    const result = JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    );
+
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.processError, true);
+    assert.equal(result.stopReason, "error");
+    assert.match(result.errorMessage, /configured 0\.1s run timeout/);
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test(
+  "runAgent timeout terminates Unix descendant processes",
+  { skip: process.platform === "win32" },
+  () => {
+    const { moduleUrl, cleanup } = createTestableRunnerModule();
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-tree-"));
+    const harnessPath = path.join(tmpDir, "tree-harness.mjs");
+    const markerPath = path.join(tmpDir, "descendant-marker");
+
+    fs.writeFileSync(
+      harnessPath,
+      `import fs from "node:fs";
+      import { spawn } from "node:child_process";
+      if (process.argv.includes("--mode")) {
+        spawn(process.execPath, ["-e", ${JSON.stringify(`process.on("SIGTERM", () => {}); setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "alive"), 1000)`) }], { stdio: "ignore" });
+        setInterval(() => {}, 1000);
+      } else {
+        const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+        const result = await runAgent({
+          cwd: process.cwd(),
+          agents: [{ name: "tree", description: "tree", source: "user", systemPrompt: "" }],
+          callIndex: 0,
+          agentName: "tree",
+          prompt: "hello",
+          initialContext: "empty",
+          parentDepth: 0,
+          parentAgentStack: [],
+          maxDepth: 3,
+          preventCycles: true,
+          timeoutMs: 100,
+          makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+        });
+        await new Promise((resolve) => setTimeout(resolve, 1300));
+        process.stdout.write(JSON.stringify({ result, markerExists: fs.existsSync(${JSON.stringify(markerPath)}) }));
+      }`,
+    );
+
+    try {
+      const output = JSON.parse(
+        execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+          encoding: "utf8",
+          timeout: 10_000,
+        }),
+      );
+      assert.equal(output.result.processError, true);
+      assert.equal(output.markerExists, false);
+    } finally {
+      cleanup();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("buildPiArgs plans ephemeral and persistent session flags", async () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   try {
@@ -275,27 +877,25 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
 
     assert.deepEqual(
       buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined),
-      ["--mode", "json", "-p", "--no-session", "hello"],
+      ["--mode", "rpc", "--no-session"],
     );
 
     assert.deepEqual(
       buildPiArgs(agent, null, "hello", "parent", "/tmp/parent.jsonl", undefined, undefined),
-      ["--mode", "json", "-p", "--session", "/tmp/parent.jsonl", "hello"],
+      ["--mode", "rpc", "--session", "/tmp/parent.jsonl"],
     );
 
     assert.deepEqual(
       buildPiArgs(agent, null, "hello", "parent", "/tmp/parent.jsonl", session, undefined),
       [
         "--mode",
-        "json",
-        "-p",
+        "rpc",
         "--fork",
         "/tmp/parent.jsonl",
         "--session-id",
         "subagent.abc123",
         "--name",
         "subagent: review · api-review",
-        "hello",
       ],
     );
 
@@ -309,17 +909,30 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
         { ...session, created: false, initialContextApplied: null },
         undefined,
       ),
-      ["--mode", "json", "-p", "--session-id", "subagent.abc123", "hello"],
+      ["--mode", "rpc", "--session-id", "subagent.abc123"],
+    );
+
+    assert.deepEqual(
+      buildPiArgs(
+        { ...agent, tools: ["read"], noTools: true },
+        null,
+        "hello",
+        "empty",
+        null,
+        undefined,
+        undefined,
+      ),
+      ["--mode", "rpc", "--no-session", "--no-tools"],
     );
 
     assert.deepEqual(
       buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined),
-      ["--mode", "json", "-p", "--no-session", "--model", "agent-model", "hello"],
+      ["--mode", "rpc", "--no-session", "--model", "agent-model"],
     );
 
     assert.deepEqual(
       buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, "call-model"),
-      ["--mode", "json", "-p", "--no-session", "--model", "call-model", "hello"],
+      ["--mode", "rpc", "--no-session", "--model", "call-model"],
     );
   } finally {
     cleanup();

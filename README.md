@@ -31,6 +31,8 @@ There are many subagent extensions for Pi; this one is mine.
 
 ### Install
 
+Requires Pi 0.80.5 or newer.
+
 #### Option 1: Install from npm (recommended)
 
 ```bash
@@ -77,7 +79,7 @@ Subagents are defined as Markdown files with YAML frontmatter.
 
 **Project agents:** `.pi/agents/*.md`.
 
-Project agents win on name conflicts. They are repo-controlled configuration and are discovered, advertised to the main agent, and executed like user agents. Use project agents only in repositories you trust.
+Project agents win on name conflicts, but only after explicit project trust recorded in Pi's trust store or supplied with `--approve`. Implicit or session-only trust does not enable them. They are repo-controlled configuration and execute like user agents.
 
 #### Starter Agent
 
@@ -100,6 +102,7 @@ A good default for fast codebase reconnaissance. It prefers named sessions becau
 ---
 name: explore
 description: Codebase exploration specialist for focused searches and evidence-backed summaries.
+tools: read,grep,find,ls
 sessionPreference: persistent
 sessionHint: Prefer a topic-specific named session for iterative codebase exploration, e.g. session="explore-auth". Use ephemeral calls for one-off or parallel independent searches.
 ---
@@ -131,14 +134,15 @@ You review code changes. Focus on substantive issues, cite files and lines, and 
 | `description` | Yes | — | What the agent does; shown to the main agent. |
 | `model` | No | Parent/default Pi model | Sets the default model for this agent. A per-call `model` overrides it. Supports provider-prefixed values such as `anthropic/claude-3-5-sonnet`. |
 | `thinking` | No | Parent/default Pi thinking level | Sets the thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). |
-| `tools` | No | `read,bash,edit,write` | Comma-separated list of built-in tools to enable for this agent. |
+| `tools` | No | Parent/default Pi tools | Comma-separated allowlist of tool names to enable for this agent. Omitted or empty values inherit the parent configuration. |
+| `noTools` | No | `false` | Set to `true` to disable all built-in, extension, and custom tools for this agent. |
 | `sessionPreference` | No | — | Advisory machine-readable hint for the main agent. One of `ephemeral`, `persistent`, or `either`. |
 | `sessionHint` | No | — | Advisory free-form guidance shown to the main agent when choosing whether to pass `session`. |
 
 Notes:
 
 - Agent `model` is a default for that agent, not a lock. A `model` supplied in a subagent call wins.
-- `tools` controls built-in tools. Extension tools remain available unless extensions are disabled.
+- `tools` is passed to Pi's `--tools` allowlist and can include built-in or extension tool names. `noTools: true` takes precedence over `tools`.
 - `sessionPreference` and `sessionHint` only guide the main agent. They do not automatically create, require, or name persistent sessions.
 - `sessionHint` can be used by itself for free-form guidance; the extension does not infer `sessionPreference` from it.
 - The Markdown body becomes the agent's system prompt and is appended to Pi's default system prompt.
@@ -154,7 +158,7 @@ Optional built-in tools:
 - `find` — Find files by glob pattern
 - `ls` — List directory contents
 
-For a read-only agent, use `tools: read,find,ls,grep`.
+For a read-only agent, use `tools: read,find,ls,grep`. For an agent with no tools at all, use `noTools: true`.
 
 ---
 
@@ -169,8 +173,10 @@ Each subagent runs in a separate `pi` process:
 - No shared memory/state with the parent process.
 - No visibility into sibling subagents.
 - Its own model/tool/runtime loop.
+- Uses Pi's headless RPC mode so prompts are transported verbatim and completion follows Pi's settlement events.
+- Interactive UI requests from inherited extensions are cancelled because subagent processes have no interactive user; non-interactive extension hooks continue normally.
 - Started with `PI_OFFLINE=1` to skip startup network operations and reduce latency.
-- Inherits relevant parent CLI configuration such as extensions, provider/theme/skill flags, model/thinking/tool defaults, and custom session storage when applicable. A per-call `model` overrides the agent file's default model.
+- Inherits relevant parent CLI configuration such as extensions, provider/theme/skill flags, model/thinking/tool defaults, and custom session storage when applicable. Temporary `--approve` trust is inherited only when the child uses the same working directory; `--no-approve` is always preserved. A per-call `model` overrides the agent file's default model.
 
 The main agent receives a concise text summary for each subagent call. Tool calls, usage, generated session IDs, and creation metadata are available to the TUI and tool result details; the text summary includes only the logical `session` handle in the call header when one was provided.
 
@@ -189,7 +195,7 @@ The tool is named `subagent` and accepts one top-level `calls` array. Use the sa
 }
 ```
 
-Each call supports:
+A tool invocation accepts between 1 and 8 calls. Each call supports:
 
 | Field | Required | Default | Description |
 | --- | --- | --- | --- |
@@ -198,7 +204,8 @@ Each call supports:
 | `model` | No | Agent/default Pi model | Model to use for this call. Overrides the agent file's default model. |
 | `cwd` | No | Parent cwd | Working directory for this subagent process. |
 | `initialContext` | No | `"empty"` | `"empty"` starts a newly-created child conversation without parent history. `"parent"` seeds a newly-created child conversation from the current parent session snapshot. Existing named sessions ignore this field. |
-| `session` | No | — | Logical handle for a persistent child Pi session. Use this for multi-turn specialist work. Requires a persisted parent Pi session. |
+| `session` | No | — | Logical handle of at most 120 characters for a persistent child Pi session. Use this for multi-turn specialist work. Requires a persisted parent Pi session. |
+| `timeout` | No | Unlimited | Positive integer wall-clock timeout in seconds for this call (maximum 2,147,483). On expiry, partial output is preserved and the call fails. |
 
 #### One ephemeral call
 
@@ -369,6 +376,10 @@ If any call fails, the tool result is marked as an error while still returning e
 [2: testing-audit] failed:
 Unknown agent: "testing-audit".
 ```
+
+Model-facing output is limited to 50KB or 2000 lines. When a captured result exceeds either limit, every call's status remains visible, captured details remain available in the expanded TUI, and the complete captured summary is written to a mode-`0600` temporary file for the lifetime of the parent Pi session.
+
+Process capture is separately bounded to prevent a long-running child from consuming unbounded memory. The runner retains a rolling 5MB window of assistant messages. Earlier messages and oversized tool-only messages may be omitted; oversized final text is retained in truncated form with an explicit marker. The temporary summary artifact contains the complete captured summary, not an unbounded raw event transcript.
 
 Full session metadata, including generated session ID, effective cwd, creation status, and applied initial context, is available in the tool result details and TUI expanded view.
 

@@ -3,7 +3,7 @@
  */
 
 import type { Message } from "@earendil-works/pi-ai";
-import { getFinalAssistantText } from "./runner-events.js";
+import { getFinalAssistantText, hasAttributedToolError } from "./runner-events.js";
 
 /** Initial context for a newly-created subagent conversation. */
 export type InitialContext = "empty" | "parent";
@@ -43,19 +43,31 @@ export interface SingleResult {
 	exitCode: number;
 	messages: Message[];
 	stderr: string;
+	stderrTruncated?: boolean;
 	usage: UsageStats;
 	model?: string;
 	stopReason?: string;
 	errorMessage?: string;
+	sawAgentStart?: boolean;
 	sawAgentEnd?: boolean;
+	sawAgentSettled?: boolean;
+	rpcPromptAccepted?: boolean;
+	rpcPromptIdle?: boolean;
+	handledWithoutAgent?: boolean;
+	/** Immediately pending failed-tool text for terminal-status attribution. */
+	pendingToolError?: string;
+	/** Older or oversized assistant messages were omitted to bound memory. */
+	captureTruncated?: boolean;
 	/** Process-level failures that should not be normalized away by semantic assistant completion. */
 	processError?: boolean;
 }
 
-/** Metadata attached to every tool result for rendering. */
+/** Metadata attached to every tool result for rendering and result middleware. */
 export interface SubagentDetails {
+	kind: "pi-subagent";
 	projectAgentsDir: string | null;
 	results: SingleResult[];
+	failed?: true;
 }
 
 /** A display-friendly representation of a message part. */
@@ -87,17 +99,25 @@ export function hasFinalAssistantOutput(r: Pick<SingleResult, "messages">): bool
 	return getFinalAssistantText(r.messages).trim().length > 0;
 }
 
-/** Whether the child semantically completed the run. */
-export function hasSemanticCompletion(r: Pick<SingleResult, "messages" | "sawAgentEnd">): boolean {
-	return Boolean(r.sawAgentEnd) && hasFinalAssistantOutput(r);
+/** Whether the child semantically completed the run successfully. */
+export function hasSemanticCompletion(
+	r: Pick<
+		SingleResult,
+		"messages" | "sawAgentEnd" | "stopReason" | "errorMessage" | "pendingToolError" | "handledWithoutAgent"
+	>,
+): boolean {
+	if (r.handledWithoutAgent) return true;
+	if (!r.sawAgentEnd || !hasFinalAssistantOutput(r)) return false;
+	if (r.stopReason === "aborted") return false;
+	if (r.stopReason === "error") return hasAttributedToolError(r);
+	return true;
 }
 
 /** Whether a result should be treated as successful by the wrapper/UI. */
 export function isResultSuccess(r: SingleResult): boolean {
 	if (r.exitCode === -1) return false;
 	if (r.processError) return false;
-	if (hasSemanticCompletion(r)) return true;
-	return r.exitCode === 0 && r.stopReason !== "error" && r.stopReason !== "aborted";
+	return hasSemanticCompletion(r);
 }
 
 /** Whether a result represents an error. */
@@ -109,12 +129,20 @@ export function isResultError(r: SingleResult): boolean {
 /** Reconcile process exit status with semantic completion observed from Pi's event stream. */
 export function normalizeCompletedResult(result: SingleResult, wasAborted: boolean): SingleResult {
 	const hasSemanticSuccess = hasSemanticCompletion(result);
-
+	const completedBeforeAbort =
+		result.sawAgentSettled &&
+		(hasSemanticSuccess ||
+			(result.stopReason === "aborted" && result.sawAgentEnd && hasFinalAssistantOutput(result)));
 	if (wasAborted) {
-		if (hasSemanticSuccess && !result.processError) {
+		if (completedBeforeAbort && !result.processError) {
 			result.exitCode = 0;
-			if (result.stopReason === "aborted") result.stopReason = undefined;
-			if (result.errorMessage === "Subagent was aborted.") {
+			if (result.stopReason === "aborted" || result.stopReason === "error") {
+				result.stopReason = undefined;
+			}
+			if (
+				result.errorMessage === "Subagent was aborted." ||
+				result.errorMessage === result.stderr.trim()
+			) {
 				result.errorMessage = undefined;
 			}
 		} else if (result.processError) {
@@ -130,6 +158,17 @@ export function normalizeCompletedResult(result: SingleResult, wasAborted: boole
 			if (!result.stderr.trim()) result.stderr = "Subagent was aborted.";
 		}
 		return result;
+	}
+
+	if (result.exitCode === 0 && !hasSemanticSuccess) {
+		result.exitCode = 1;
+		if (!result.stopReason) result.stopReason = "error";
+		if (!result.errorMessage) {
+			result.errorMessage = result.sawAgentEnd
+				? "Subagent completed without final assistant output."
+				: "Subagent exited without completing an agent run.";
+		}
+		if (!result.stderr.trim()) result.stderr = result.errorMessage;
 	}
 
 	if (result.exitCode > 0) {

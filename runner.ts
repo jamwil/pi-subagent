@@ -8,9 +8,14 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import {
+  DEFAULT_MAX_BYTES,
+  truncateTail,
+} from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
-import { parseInheritedCliArgs } from "./runner-cli.js";
+import { getInheritedProjectTrustArgs, parseInheritedCliArgs } from "./runner-cli.js";
 import { processPiJsonLine } from "./runner-events.js";
 import {
   type InitialContext,
@@ -23,7 +28,8 @@ import {
 } from "./types.js";
 
 const isWindows = process.platform === "win32";
-const SIGKILL_TIMEOUT_MS = 5000;
+const SIGKILL_TIMEOUT_MS = 500;
+const TERMINATION_SETTLE_TIMEOUT_MS = SIGKILL_TIMEOUT_MS + 1000;
 const AGENT_END_GRACE_MS = 250;
 const SUBAGENT_DEPTH_ENV = "PI_SUBAGENT_DEPTH";
 const SUBAGENT_MAX_DEPTH_ENV = "PI_SUBAGENT_MAX_DEPTH";
@@ -32,12 +38,37 @@ const SUBAGENT_PREVENT_CYCLES_ENV = "PI_SUBAGENT_PREVENT_CYCLES";
 const SUBAGENT_TEMP_PARENT_SESSION_ENV = "PI_SUBAGENT_TEMP_PARENT_SESSION";
 const PI_OFFLINE_ENV = "PI_OFFLINE";
 const PERSISTENT_SESSION_EXIT_TIMEOUT_MS = 30_000;
+const MAX_JSON_LINE_BYTES = 25 * 1024 * 1024;
+const MAX_STDERR_BYTES = DEFAULT_MAX_BYTES;
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
 // ---------------------------------------------------------------------------
 // Process helpers
 // ---------------------------------------------------------------------------
+
+export interface UnexpectedSignalFailure {
+  exitCode: number;
+  message: string;
+}
+
+/** Classify a signal exit that was not initiated by cancellation or a watchdog. */
+export function getUnexpectedSignalFailure(
+  code: number | null,
+  signalName: NodeJS.Signals | null,
+  wasAborted: boolean,
+  forcedExitCode?: number,
+): UnexpectedSignalFailure | null {
+  if (code !== null || !signalName || wasAborted || forcedExitCode !== undefined) {
+    return null;
+  }
+
+  const signalNumber = os.constants.signals[signalName];
+  return {
+    exitCode: typeof signalNumber === "number" ? 128 + signalNumber : 1,
+    message: `Subagent terminated unexpectedly by ${signalName}.`,
+  };
+}
 
 /**
  * Derive the spawn command from the current process context so child invocations
@@ -62,8 +93,13 @@ function writePromptToTempFile(
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
   const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
-  fs.writeFileSync(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
-  return { dir: tmpDir, filePath };
+  try {
+    fs.writeFileSync(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+    return { dir: tmpDir, filePath };
+  } catch (error) {
+    cleanupTempDir(tmpDir);
+    throw error;
+  }
 }
 
 function writeSessionSnapshotToTempFile(
@@ -73,8 +109,13 @@ function writeSessionSnapshotToTempFile(
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
   const filePath = path.join(tmpDir, `parent-${safeName}.jsonl`);
-  fs.writeFileSync(filePath, sessionJsonl, { encoding: "utf-8", mode: 0o600 });
-  return { dir: tmpDir, filePath };
+  try {
+    fs.writeFileSync(filePath, sessionJsonl, { encoding: "utf-8", mode: 0o600 });
+    return { dir: tmpDir, filePath };
+  } catch (error) {
+    cleanupTempDir(tmpDir);
+    throw error;
+  }
 }
 
 function cleanupTempDir(dir: string | null): void {
@@ -119,19 +160,24 @@ const inheritedCliArgs = parseInheritedCliArgs(process.argv);
 export function buildPiArgs(
   agent: AgentConfig,
   systemPromptPath: string | null,
-  prompt: string,
+  _prompt: string,
   initialContext: InitialContext,
   parentSessionPath: string | null,
   session: SubagentSessionDetails | undefined,
   persistentSessionDir: string | undefined,
   callModel?: string,
+  inheritProjectApproval = true,
 ): string[] {
+  const projectTrustArgs = getInheritedProjectTrustArgs(
+    inheritedCliArgs.projectTrustOverride,
+    inheritProjectApproval,
+  );
   const args: string[] = [
     "--mode",
-    "json",
+    "rpc",
     ...inheritedCliArgs.extensionArgs,
     ...inheritedCliArgs.alwaysProxy,
-    "-p",
+    ...projectTrustArgs,
   ];
 
   if (session && persistentSessionDir && !inheritedCliArgs.sessionDir) {
@@ -156,7 +202,9 @@ export function buildPiArgs(
   const thinking = agent.thinking ?? inheritedCliArgs.fallbackThinking;
   if (thinking) args.push("--thinking", thinking);
 
-  if (agent.tools && agent.tools.length > 0) {
+  if (agent.noTools === true) {
+    args.push("--no-tools");
+  } else if (agent.tools && agent.tools.length > 0) {
     args.push("--tools", agent.tools.join(","));
   } else if (agent.tools === undefined) {
     if (inheritedCliArgs.fallbackTools !== undefined) {
@@ -167,7 +215,6 @@ export function buildPiArgs(
   }
 
   if (systemPromptPath) args.push("--append-system-prompt", systemPromptPath);
-  args.push(prompt);
   return args;
 }
 
@@ -206,6 +253,8 @@ export interface RunAgentOptions {
   maxDepth: number;
   /** Whether cycle prevention should be enforced in child processes. */
   preventCycles: boolean;
+  /** Optional wall-clock timeout for the child run. Omitted means unlimited. */
+  timeoutMs?: number;
   /** Abort signal for cancellation. */
   signal?: AbortSignal;
   /** Streaming update callback. */
@@ -219,6 +268,10 @@ export interface RunAgentOptions {
  *
  * Returns a SingleResult even on failure (exitCode > 0, stderr populated).
  */
+export function isSameWorkingDirectory(left: string, right: string): boolean {
+  return fs.realpathSync(left) === fs.realpathSync(right);
+}
+
 export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
   const {
     cwd,
@@ -236,6 +289,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     parentAgentStack,
     maxDepth,
     preventCycles,
+    timeoutMs,
     signal,
     onUpdate,
     makeDetails,
@@ -311,29 +365,31 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     });
   };
 
+  let wasAborted = false;
   // Write system prompt to temp file if needed.
   let promptTmpDir: string | null = null;
   let promptTmpPath: string | null = null;
-  if (agent.systemPrompt.trim()) {
-    const tmp = writePromptToTempFile(agent.name, agent.systemPrompt);
-    promptTmpDir = tmp.dir;
-    promptTmpPath = tmp.filePath;
-  }
-
-  // Write parent session snapshot if this call needs one.
   let parentSessionTmpDir: string | null = null;
   let parentSessionTmpPath: string | null = null;
-  if (needsParentSnapshot && parentSessionSnapshotJsonl) {
-    const snapshotCwd = path.resolve(callCwd ?? cwd);
-    const snapshotJsonl =
-      rewriteSessionHeaderCwd(parentSessionSnapshotJsonl, snapshotCwd) ??
-      parentSessionSnapshotJsonl;
-    const tmp = writeSessionSnapshotToTempFile(agent.name, snapshotJsonl);
-    parentSessionTmpDir = tmp.dir;
-    parentSessionTmpPath = tmp.filePath;
-  }
 
   try {
+    if (agent.systemPrompt.trim()) {
+      const tmp = writePromptToTempFile(agent.name, agent.systemPrompt);
+      promptTmpDir = tmp.dir;
+      promptTmpPath = tmp.filePath;
+    }
+
+    // Write parent session snapshot if this call needs one.
+    if (needsParentSnapshot && parentSessionSnapshotJsonl) {
+      const snapshotCwd = path.resolve(callCwd ?? cwd);
+      const snapshotJsonl =
+        rewriteSessionHeaderCwd(parentSessionSnapshotJsonl, snapshotCwd) ??
+        parentSessionSnapshotJsonl;
+      const tmp = writeSessionSnapshotToTempFile(agent.name, snapshotJsonl);
+      parentSessionTmpDir = tmp.dir;
+      parentSessionTmpPath = tmp.filePath;
+    }
+
     const piArgs = buildPiArgs(
       agent,
       promptTmpPath,
@@ -343,8 +399,8 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       session,
       persistentSessionDir,
       callModel,
+      isSameWorkingDirectory(callCwd ?? cwd, cwd),
     );
-    let wasAborted = false;
 
     const exitCode = await new Promise<number>((resolve) => {
       const nextDepth = Math.max(0, Math.floor(parentDepth)) + 1;
@@ -354,6 +410,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       const proc = spawn(command, [...prefixArgs, ...piArgs], {
         cwd: callCwd ?? cwd,
         shell: false,
+        detached: !isWindows,
         stdio: ["pipe", "pipe", "pipe"],
         env: {
           ...process.env,
@@ -369,15 +426,34 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       proc.stdin.on("error", () => {
         /* ignore broken pipe on fast exits */
       });
-      proc.stdin.end();
+      // RPC preserves prompt bytes exactly. Print-mode stdin trims leading and
+      // trailing whitespace, while argv reinterprets leading "-" and "@".
+      proc.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
 
       let buffer = "";
+      const stdoutDecoder = new StringDecoder("utf8");
+      const stderrDecoder = new StringDecoder("utf8");
       let didClose = false;
       let settled = false;
       let abortHandler: (() => void) | undefined;
       let semanticCompletionTimer: NodeJS.Timeout | undefined;
       let persistentSessionExitTimer: NodeJS.Timeout | undefined;
+      let runTimeoutTimer: NodeJS.Timeout | undefined;
+      let rpcHandledTimer: NodeJS.Timeout | undefined;
+      let sigkillTimer: NodeJS.Timeout | undefined;
+      let terminationSettleTimer: NodeJS.Timeout | undefined;
+      let terminationStarted = false;
       let forcedExitCode: number | undefined;
+
+      const appendStderr = (text: string) => {
+        const combined = `${result.stderr}${text}`;
+        const truncation = truncateTail(combined, {
+          maxBytes: MAX_STDERR_BYTES,
+          maxLines: Number.MAX_SAFE_INTEGER,
+        });
+        result.stderr = truncation.content;
+        if (truncation.truncated) result.stderrTruncated = true;
+      };
 
       const clearSemanticCompletionTimer = () => {
         if (semanticCompletionTimer) {
@@ -393,7 +469,49 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         }
       };
 
+      const clearRunTimeoutTimer = () => {
+        if (runTimeoutTimer) {
+          clearTimeout(runTimeoutTimer);
+          runTimeoutTimer = undefined;
+        }
+      };
+
+      const clearRpcHandledTimer = () => {
+        if (rpcHandledTimer) {
+          clearTimeout(rpcHandledTimer);
+          rpcHandledTimer = undefined;
+        }
+      };
+
+      const isProcessGroupAlive = () => {
+        if (isWindows || proc.pid === undefined) return false;
+        try {
+          process.kill(-proc.pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      const signalProcessTree = (signalName: NodeJS.Signals) => {
+        if (proc.pid === undefined) return;
+        try {
+          // Detached Unix children lead their own process group. A negative PID
+          // signals Pi and every descendant that has not deliberately escaped.
+          process.kill(-proc.pid, signalName);
+        } catch {
+          try {
+            proc.kill(signalName);
+          } catch {
+            // The process may already have exited between checks.
+          }
+        }
+      };
+
       const terminateChild = () => {
+        if (terminationStarted) return;
+        terminationStarted = true;
+
         if (isWindows) {
           if (proc.pid !== undefined) {
             const killer = spawn("taskkill", ["/T", "/F", "/PID", String(proc.pid)], {
@@ -401,21 +519,47 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
             });
             killer.unref();
           }
-          return;
+        } else {
+          signalProcessTree("SIGTERM");
+          sigkillTimer = setTimeout(() => {
+            signalProcessTree("SIGKILL");
+          }, SIGKILL_TIMEOUT_MS);
         }
 
-        proc.kill("SIGTERM");
-        const sigkillTimer = setTimeout(() => {
-          if (!didClose) proc.kill("SIGKILL");
-        }, SIGKILL_TIMEOUT_MS);
-        sigkillTimer.unref();
+        terminationSettleTimer = setTimeout(() => {
+          if (settled) return;
+          proc.stdout.removeListener("data", onStdoutData);
+          proc.stderr.removeListener("data", onStderrData);
+          if (forcedExitCode === undefined) forcedExitCode = wasAborted ? 130 : 1;
+          finish(forcedExitCode);
+        }, TERMINATION_SETTLE_TIMEOUT_MS);
       };
+
+      if (timeoutMs !== undefined) {
+        runTimeoutTimer = setTimeout(() => {
+          if (didClose || settled) return;
+          const timeoutSeconds = timeoutMs / 1000;
+          result.processError = true;
+          result.stopReason = "error";
+          result.errorMessage = `Subagent exceeded its configured ${timeoutSeconds}s run timeout.`;
+          if (!result.stderr.includes(result.errorMessage)) {
+            appendStderr(`${result.stderr ? "\n" : ""}${result.errorMessage}`);
+          }
+          forcedExitCode = 1;
+          terminateChild();
+        }, timeoutMs);
+        runTimeoutTimer.unref();
+      }
 
       const finish = (code: number) => {
         if (settled) return;
         settled = true;
         clearSemanticCompletionTimer();
         clearPersistentSessionExitTimer();
+        clearRunTimeoutTimer();
+        clearRpcHandledTimer();
+        if (sigkillTimer) clearTimeout(sigkillTimer);
+        if (terminationSettleTimer) clearTimeout(terminationSettleTimer);
         if (signal && abortHandler) {
           signal.removeEventListener("abort", abortHandler);
         }
@@ -423,8 +567,55 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       };
 
       const flushLine = (line: string) => {
+        if (Buffer.byteLength(line, "utf8") > MAX_JSON_LINE_BYTES) {
+          const message = `Subagent emitted a JSON event larger than ${MAX_JSON_LINE_BYTES} bytes.`;
+          result.processError = true;
+          result.stopReason = "error";
+          result.errorMessage = message;
+          appendStderr(`${result.stderr ? "\n" : ""}${message}`);
+          forcedExitCode = 1;
+          terminateChild();
+          return;
+        }
+        let event: any;
+        try {
+          event = JSON.parse(line);
+        } catch {
+          event = undefined;
+        }
+        if (event?.type === "extension_ui_request" && typeof event.id === "string") {
+          proc.stdin.write(`${JSON.stringify({
+            type: "extension_ui_response",
+            id: event.id,
+            cancelled: true,
+          })}\n`);
+        }
+
         if (processPiJsonLine(line, result)) emitUpdate();
-        maybeFinishFromAgentEnd();
+        if (result.sawAgentStart) clearRpcHandledTimer();
+        if (
+          result.rpcPromptIdle &&
+          !result.sawAgentStart &&
+          !result.sawAgentSettled
+        ) {
+          result.handledWithoutAgent = true;
+          result.sawAgentSettled = true;
+        }
+        if (
+          result.rpcPromptAccepted &&
+          !result.sawAgentStart &&
+          !result.sawAgentSettled &&
+          !rpcHandledTimer
+        ) {
+          rpcHandledTimer = setTimeout(() => {
+            if (result.sawAgentStart || result.sawAgentSettled || settled) return;
+            proc.stdin.write(`${JSON.stringify({
+              type: "get_state",
+              id: "pi-subagent-prompt-state",
+            })}\n`);
+          }, AGENT_END_GRACE_MS);
+        }
+        maybeFinishFromSettlement();
       };
 
       const flushBufferedLines = (text: string) => {
@@ -433,19 +624,20 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         }
       };
 
-      const maybeFinishFromAgentEnd = () => {
-        if (!result.sawAgentEnd || didClose || settled) return;
+      const maybeFinishFromSettlement = () => {
+        if (!result.sawAgentSettled || didClose || settled) return;
+        if (!proc.stdin.destroyed) proc.stdin.end();
         if (session) {
           // Named sessions persist child history. Let Pi exit naturally so its
           // session file is fully flushed before the parent reports completion.
           if (!persistentSessionExitTimer) {
             persistentSessionExitTimer = setTimeout(() => {
-              if (didClose || settled || !result.sawAgentEnd) return;
+              if (didClose || settled || !result.sawAgentSettled) return;
               result.processError = true;
               result.stopReason = "error";
-              result.errorMessage = `Named subagent session did not exit within ${PERSISTENT_SESSION_EXIT_TIMEOUT_MS}ms after completing; terminated to avoid hanging.`;
+              result.errorMessage = `Named subagent session did not exit within ${PERSISTENT_SESSION_EXIT_TIMEOUT_MS}ms after settling; terminated to avoid hanging.`;
               if (!result.stderr.includes(result.errorMessage)) {
-                result.stderr += `${result.stderr ? "\n" : ""}${result.errorMessage}`;
+                appendStderr(`${result.stderr ? "\n" : ""}${result.errorMessage}`);
               }
               forcedExitCode = 1;
               terminateChild();
@@ -456,40 +648,71 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         }
         clearSemanticCompletionTimer();
         semanticCompletionTimer = setTimeout(() => {
-          if (didClose || settled || !result.sawAgentEnd) return;
+          if (didClose || settled || !result.sawAgentSettled) return;
           if (buffer.trim()) {
             flushBufferedLines(buffer);
             buffer = "";
           }
           proc.stdout.removeListener("data", onStdoutData);
           proc.stderr.removeListener("data", onStderrData);
-          finish(0);
+          forcedExitCode = 0;
           terminateChild();
         }, AGENT_END_GRACE_MS);
         semanticCompletionTimer.unref();
       };
 
       const onStdoutData = (chunk: Buffer) => {
-        buffer += chunk.toString();
+        buffer += stdoutDecoder.write(chunk);
         const lines = buffer.split(/\r?\n/);
         buffer = lines.pop() || "";
         for (const line of lines) flushLine(line);
+        if (Buffer.byteLength(buffer, "utf8") > MAX_JSON_LINE_BYTES) {
+          flushLine(buffer);
+          buffer = "";
+        }
       };
 
       const onStderrData = (chunk: Buffer) => {
-        result.stderr += chunk.toString();
+        appendStderr(stderrDecoder.write(chunk));
       };
 
       proc.stdout.on("data", onStdoutData);
       proc.stderr.on("data", onStderrData);
 
-      proc.on("close", (code) => {
+      proc.on("close", (code, signalName) => {
         didClose = true;
+        buffer += stdoutDecoder.end();
+        const stderrRemainder = stderrDecoder.end();
+        if (stderrRemainder) appendStderr(stderrRemainder);
         if (buffer.trim()) flushBufferedLines(buffer);
-        finish(code ?? 0);
+
+        const signalFailure = getUnexpectedSignalFailure(
+          code,
+          signalName,
+          wasAborted,
+          forcedExitCode,
+        );
+        if (signalFailure && !settled) {
+          result.processError = true;
+          result.stopReason = "error";
+          result.errorMessage = signalFailure.message;
+          if (!result.stderr.includes(signalFailure.message)) {
+            appendStderr(`${result.stderr ? "\n" : ""}${signalFailure.message}`);
+          }
+          forcedExitCode = signalFailure.exitCode;
+          terminateChild();
+        }
+
+        if (terminationStarted && !isWindows && isProcessGroupAlive()) {
+          return;
+        }
+        finish(code ?? signalFailure?.exitCode ?? 1);
       });
 
       proc.on("error", (err) => {
+        result.processError = true;
+        result.stopReason = "error";
+        result.errorMessage = err.message;
         if (!result.stderr.trim()) result.stderr = err.message;
         finish(1);
       });
@@ -499,6 +722,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         abortHandler = () => {
           if (didClose || settled) return;
           wasAborted = true;
+          clearRunTimeoutTimer();
           terminateChild();
         };
         if (signal.aborted) abortHandler();
@@ -507,6 +731,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     });
 
     result.exitCode = exitCode;
+    return normalizeCompletedResult(result, wasAborted);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    result.exitCode = 1;
+    result.processError = true;
+    result.stopReason = "error";
+    result.errorMessage = message;
+    if (!result.stderr.trim()) result.stderr = message;
     return normalizeCompletedResult(result, wasAborted);
   } finally {
     cleanupTempDir(promptTmpDir);

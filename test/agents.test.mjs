@@ -22,7 +22,8 @@ function createTestableAgentsModule() {
 
   fs.writeFileSync(
     stubPath,
-    `export function parseFrontmatter(content) {
+    `export const CONFIG_DIR_NAME = ".pi";
+export function parseFrontmatter(content) {
       const match = content.match(/^---\\r?\\n([\\s\\S]*?)\\r?\\n---\\r?\\n?([\\s\\S]*)$/);
       if (!match) return { frontmatter: {}, body: content };
       const frontmatter = {};
@@ -32,7 +33,13 @@ function createTestableAgentsModule() {
         if (separator === -1) continue;
         const key = line.slice(0, separator).trim();
         const value = line.slice(separator + 1).trim();
-        frontmatter[key] = value;
+        frontmatter[key] = value === "true"
+          ? true
+          : value === "false"
+            ? false
+            : value === "[]"
+              ? []
+              : value;
       }
       return { frontmatter, body: match[2] ?? "" };
     }
@@ -53,10 +60,10 @@ function createTestableAgentsModule() {
   };
 }
 
-function runDiscoverAgents(moduleUrl, cwd, scope, env) {
+function runDiscoverAgents(moduleUrl, cwd, scope, env, includeProjectAgents = true) {
   const script = `
     import { discoverAgents } from ${JSON.stringify(moduleUrl)};
-    const result = discoverAgents(${JSON.stringify(cwd)}, ${JSON.stringify(scope)});
+    const result = discoverAgents(${JSON.stringify(cwd)}, ${JSON.stringify(scope)}, ${JSON.stringify(includeProjectAgents)});
     process.stdout.write(JSON.stringify(result));
   `;
 
@@ -68,10 +75,10 @@ function runDiscoverAgents(moduleUrl, cwd, scope, env) {
   );
 }
 
-function runDiscoverAgentsWithStarter(moduleUrl, cwd, env) {
+function runDiscoverAgentsWithStarter(moduleUrl, cwd, env, includeProjectAgents = true) {
   const script = `
     import { discoverAgentsWithStarter } from ${JSON.stringify(moduleUrl)};
-    const result = discoverAgentsWithStarter(${JSON.stringify(cwd)});
+    const result = discoverAgentsWithStarter(${JSON.stringify(cwd)}, ${JSON.stringify(includeProjectAgents)});
     process.stdout.write(JSON.stringify(result));
   `;
 
@@ -141,6 +148,64 @@ test("project agents override the active user config directory", () => {
   }
 });
 
+test("excludes project agents when project trust is disabled", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-agents-fixture-"));
+  const configDir = path.join(tmpDir, "override-config");
+  const projectDir = path.join(tmpDir, "project");
+  const { moduleUrl, cleanup } = createTestableAgentsModule();
+
+  writeAgent(path.join(configDir, "agents"), "shared", "user shared");
+  writeAgent(path.join(projectDir, ".pi", "agents"), "shared", "project shared");
+  writeAgent(path.join(projectDir, ".pi", "agents"), "project-only");
+
+  try {
+    const discovery = runDiscoverAgents(
+      moduleUrl,
+      projectDir,
+      "both",
+      { PI_CODING_AGENT_DIR: configDir },
+      false,
+    );
+
+    assert.equal(discovery.projectAgentsDir, null);
+    assert.deepEqual(
+      discovery.agents.map((agent) => ({ name: agent.name, source: agent.source })),
+      [{ name: "shared", source: "user" }],
+    );
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("creates a user starter instead of loading an untrusted project-only agent", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-agents-fixture-"));
+  const configDir = path.join(tmpDir, "override-config");
+  const projectDir = path.join(tmpDir, "project");
+  const { moduleUrl, cleanup } = createTestableAgentsModule();
+
+  writeAgent(path.join(projectDir, ".pi", "agents"), "project-only");
+
+  try {
+    const result = runDiscoverAgentsWithStarter(
+      moduleUrl,
+      projectDir,
+      { PI_CODING_AGENT_DIR: configDir },
+      false,
+    );
+
+    assert.equal(result.createdAgentPath, path.join(configDir, "agents", "explore.md"));
+    assert.equal(result.discovery.projectAgentsDir, null);
+    assert.deepEqual(
+      result.discovery.agents.map((agent) => ({ name: agent.name, source: agent.source })),
+      [{ name: "explore", source: "user" }],
+    );
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("parses optional session guidance from agent frontmatter", () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-agents-fixture-"));
   const homeDir = path.join(tmpDir, "home");
@@ -175,6 +240,37 @@ test("parses optional session guidance from agent frontmatter", () => {
       byName.get("hint-only")?.sessionHint,
       "Use a named session only after the first broad pass.",
     );
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("parses explicit noTools while preserving empty tools inheritance", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-agents-fixture-"));
+  const configDir = path.join(tmpDir, "override-config");
+  const agentsDir = path.join(configDir, "agents");
+  const { moduleUrl, cleanup } = createTestableAgentsModule();
+
+  fs.mkdirSync(agentsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(agentsDir, "tool-free.md"),
+    "---\nname: tool-free\ndescription: No tools\nnoTools: true\n---\n\nNo tools.\n",
+  );
+  fs.writeFileSync(
+    path.join(agentsDir, "inherit.md"),
+    "---\nname: inherit\ndescription: Inherit tools\ntools: []\n---\n\nInherit.\n",
+  );
+
+  try {
+    const discovery = runDiscoverAgents(moduleUrl, tmpDir, "user", {
+      PI_CODING_AGENT_DIR: configDir,
+    });
+    const byName = new Map(discovery.agents.map((agent) => [agent.name, agent]));
+
+    assert.equal(byName.get("tool-free")?.noTools, true);
+    assert.equal(byName.get("inherit")?.tools, undefined);
+    assert.equal(byName.get("inherit")?.noTools, undefined);
   } finally {
     cleanup();
     fs.rmSync(tmpDir, { recursive: true, force: true });
