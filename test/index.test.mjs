@@ -9,6 +9,7 @@ import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 const jiti = createJiti(import.meta.url);
 const {
   default: registerSubagentExtension,
+  getProjectTrustOverrideFromArgv,
   resolveCallCwd,
 } = await jiti.import("../index.ts");
 
@@ -99,6 +100,13 @@ test("subagent schema uses a Google-compatible initialContext enum", () => {
   assert.equal(timeout.type, "integer");
   assert.equal(timeout.minimum, 1);
   assert.equal(timeout.maximum > 1, true);
+});
+
+test("recognizes only parsed project approval flags", () => {
+  assert.equal(getProjectTrustOverrideFromArgv(["node", "pi", "--approve"]), true);
+  assert.equal(getProjectTrustOverrideFromArgv(["node", "pi", "--no-approve"]), false);
+  assert.equal(getProjectTrustOverrideFromArgv(["node", "pi", "--model", "--approve"]), null);
+  assert.equal(getProjectTrustOverrideFromArgv(["node", "pi", "--", "--approve"]), null);
 });
 
 test("registers both cycle-prevention CLI flag forms", () => {

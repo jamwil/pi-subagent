@@ -61,6 +61,7 @@ export function parseInheritedCliArgs(argv) {
   let i = 2; // skip executable + script name
   while (i < argv.length) {
     const raw = argv[i];
+    if (raw === "--") break;
     if (!raw.startsWith("-")) {
       i++;
       continue;

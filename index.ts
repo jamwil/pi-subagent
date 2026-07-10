@@ -27,6 +27,7 @@ import {
 } from "./contract.js";
 import { formatCallsSummary, writeOutputArtifact } from "./output.js";
 import { renderCall, renderResult } from "./render.js";
+import { parseInheritedCliArgs } from "./runner-cli.js";
 import { ensureDefaultSessionDir, getDefaultSessionDirPath } from "./session-paths.js";
 import { mapConcurrent, runAgent } from "./runner.js";
 import { acquireSessionLocks, releaseSessionLocks, type SessionLockTarget } from "./session-lock.js";
@@ -226,13 +227,8 @@ function getMaxDepthFlagFromArgv(argv: string[]): string | null {
   return null;
 }
 
-function getProjectTrustOverrideFromArgv(argv: string[]): boolean | null {
-  let override: boolean | null = null;
-  for (let i = 2; i < argv.length; i++) {
-    if (argv[i] === "--approve" || argv[i] === "-a") override = true;
-    if (argv[i] === "--no-approve" || argv[i] === "-na") override = false;
-  }
-  return override;
+export function getProjectTrustOverrideFromArgv(argv: string[]): boolean | null {
+  return parseInheritedCliArgs(argv).projectTrustOverride ?? null;
 }
 
 function shouldIncludeProjectAgents(cwd: string, contextTrusted: boolean): boolean {
