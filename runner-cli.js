@@ -37,9 +37,7 @@ function resolvePathArg(value, options = {}) {
 /** Build child trust flags without approving a different working directory. */
 export function getInheritedProjectTrustArgs(projectTrustOverride, inheritProjectApproval) {
   if (projectTrustOverride === false) return ["--no-approve"];
-  if (projectTrustOverride === true) {
-    return inheritProjectApproval ? ["--approve"] : ["--no-approve"];
-  }
+  if (projectTrustOverride === true && inheritProjectApproval) return ["--approve"];
   return [];
 }
 
