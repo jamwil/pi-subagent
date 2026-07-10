@@ -624,10 +624,23 @@ test("runAgent settles prompts handled without an agent run", () => {
   fs.writeFileSync(
     harnessPath,
     `if (process.argv.includes("--mode")) {
-      await new Promise((resolve) => process.stdin.once("data", resolve));
-      process.stdout.write(JSON.stringify({ type: "response", command: "prompt", success: true }) + "\\n");
-      process.stdin.resume();
-      await new Promise((resolve) => process.stdin.once("end", resolve));
+      let buffer = "";
+      process.stdin.setEncoding("utf8");
+      for await (const chunk of process.stdin) {
+        buffer += chunk;
+        const lines = buffer.split("\\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const command = JSON.parse(line);
+          if (command.type === "prompt") {
+            process.stdout.write(JSON.stringify({ type: "response", command: "prompt", success: true }) + "\\n");
+          }
+          if (command.type === "get_state") {
+            process.stdout.write(JSON.stringify({ type: "response", id: command.id, command: "get_state", success: true, data: { isStreaming: false } }) + "\\n");
+          }
+        }
+      }
     } else {
       const { runAgent } = await import(${JSON.stringify(moduleUrl)});
       const result = await runAgent({
@@ -657,6 +670,75 @@ test("runAgent settles prompts handled without an agent run", () => {
     assert.equal(result.exitCode, 0);
     assert.equal(result.handledWithoutAgent, true);
     assert.equal(result.sawAgentSettled, true);
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("runAgent does not treat an accepted streaming prompt as handled", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-accepted-"));
+  const harnessPath = path.join(tmpDir, "accepted-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      let buffer = "";
+      let finishTimer;
+      process.stdin.setEncoding("utf8");
+      for await (const chunk of process.stdin) {
+        buffer += chunk;
+        const lines = buffer.split("\\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const command = JSON.parse(line);
+          if (command.type === "prompt") {
+            process.stdout.write(JSON.stringify({ type: "response", command: "prompt", success: true }) + "\\n");
+            finishTimer = setTimeout(() => {
+              const message = { role: "assistant", content: [{ type: "text", text: "completed" }], stopReason: "stop", timestamp: 1 };
+              process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");
+              process.stdout.write(JSON.stringify({ type: "message_end", message }) + "\\n");
+              process.stdout.write(JSON.stringify({ type: "agent_end", messages: [message] }) + "\\n");
+              process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+            }, 500);
+          }
+          if (command.type === "get_state") {
+            process.stdout.write(JSON.stringify({ type: "response", id: command.id, command: "get_state", success: true, data: { isStreaming: true } }) + "\\n");
+          }
+        }
+      }
+      clearTimeout(finishTimer);
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const result = await runAgent({
+        cwd: process.cwd(),
+        agents: [{ name: "accepted", description: "accepted", source: "user", systemPrompt: "" }],
+        callIndex: 0,
+        agentName: "accepted",
+        prompt: "hello",
+        initialContext: "empty",
+        parentDepth: 0,
+        parentAgentStack: [],
+        maxDepth: 3,
+        preventCycles: true,
+        makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+      });
+      process.stdout.write(JSON.stringify(result));
+    }`,
+  );
+
+  try {
+    const result = JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.handledWithoutAgent, undefined);
+    assert.equal(result.messages.at(-1).content[0].text, "completed");
   } finally {
     cleanup();
     fs.rmSync(tmpDir, { recursive: true, force: true });

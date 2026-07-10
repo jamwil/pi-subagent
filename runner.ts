@@ -591,6 +591,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         if (processPiJsonLine(line, result)) emitUpdate();
         if (result.sawAgentStart) clearRpcHandledTimer();
         if (
+          result.rpcPromptIdle &&
+          !result.sawAgentStart &&
+          !result.sawAgentSettled
+        ) {
+          result.handledWithoutAgent = true;
+          result.sawAgentSettled = true;
+        }
+        if (
           result.rpcPromptAccepted &&
           !result.sawAgentStart &&
           !result.sawAgentSettled &&
@@ -598,9 +606,10 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         ) {
           rpcHandledTimer = setTimeout(() => {
             if (result.sawAgentStart || result.sawAgentSettled || settled) return;
-            result.handledWithoutAgent = true;
-            result.sawAgentSettled = true;
-            maybeFinishFromSettlement();
+            proc.stdin.write(`${JSON.stringify({
+              type: "get_state",
+              id: "pi-subagent-prompt-state",
+            })}\n`);
           }, AGENT_END_GRACE_MS);
         }
         maybeFinishFromSettlement();

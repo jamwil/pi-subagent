@@ -52,6 +52,7 @@ export interface SingleResult {
 	sawAgentEnd?: boolean;
 	sawAgentSettled?: boolean;
 	rpcPromptAccepted?: boolean;
+	rpcPromptIdle?: boolean;
 	handledWithoutAgent?: boolean;
 	/** Immediately pending failed-tool text for terminal-status attribution. */
 	pendingToolError?: string;

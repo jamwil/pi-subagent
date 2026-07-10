@@ -206,6 +206,13 @@ export function processPiEvent(event, result) {
     case "response":
       if (event.command === "prompt" && event.success === true) {
         result.rpcPromptAccepted = true;
+      } else if (
+        event.command === "get_state" &&
+        event.id === "pi-subagent-prompt-state" &&
+        event.success === true &&
+        event.data?.isStreaming === false
+      ) {
+        result.rpcPromptIdle = true;
       } else if (event.success === false) {
         const message = typeof event.error === "string" ? event.error : "Subagent RPC prompt failed.";
         result.processError = true;
