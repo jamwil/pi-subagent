@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
   DEFAULT_MAX_BYTES,
@@ -430,6 +431,8 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       proc.stdin.write(`${JSON.stringify({ type: "prompt", message: prompt })}\n`);
 
       let buffer = "";
+      const stdoutDecoder = new StringDecoder("utf8");
+      const stderrDecoder = new StringDecoder("utf8");
       let didClose = false;
       let settled = false;
       let abortHandler: (() => void) | undefined;
@@ -659,7 +662,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       };
 
       const onStdoutData = (chunk: Buffer) => {
-        buffer += chunk.toString();
+        buffer += stdoutDecoder.write(chunk);
         const lines = buffer.split(/\r?\n/);
         buffer = lines.pop() || "";
         for (const line of lines) flushLine(line);
@@ -670,7 +673,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       };
 
       const onStderrData = (chunk: Buffer) => {
-        appendStderr(chunk.toString());
+        appendStderr(stderrDecoder.write(chunk));
       };
 
       proc.stdout.on("data", onStdoutData);
@@ -678,6 +681,9 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
 
       proc.on("close", (code, signalName) => {
         didClose = true;
+        buffer += stdoutDecoder.end();
+        const stderrRemainder = stderrDecoder.end();
+        if (stderrRemainder) appendStderr(stderrRemainder);
         if (buffer.trim()) flushBufferedLines(buffer);
 
         const signalFailure = getUnexpectedSignalFailure(

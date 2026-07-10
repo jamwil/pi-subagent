@@ -509,13 +509,24 @@ test("runAgent delivers CLI-like prompts verbatim through stdin", () => {
         stopReason: "stop",
         timestamp: 1,
       };
-      process.stdout.write(JSON.stringify({ type: "message_end", message }) + "\\n");
-      process.stdout.write(JSON.stringify({ type: "agent_end", messages: [message] }) + "\\n");
-      process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+      const writeEvent = async (event) => {
+        const bytes = Buffer.from(JSON.stringify(event) + "\\n");
+        const emojiOffset = bytes.indexOf(Buffer.from("😀"));
+        if (emojiOffset === -1) {
+          process.stdout.write(bytes);
+          return;
+        }
+        process.stdout.write(bytes.subarray(0, emojiOffset + 1));
+        await new Promise((resolve) => setImmediate(resolve));
+        process.stdout.write(bytes.subarray(emojiOffset + 1));
+      };
+      await writeEvent({ type: "message_end", message });
+      await writeEvent({ type: "agent_end", messages: [message] });
+      await writeEvent({ type: "agent_settled" });
     } else {
       const { runAgent } = await import(${JSON.stringify(moduleUrl)});
       const results = [];
-      for (const prompt of ["--approve", "--help", "@/tmp/secret", "-leading", "  padded prompt  \\n"]) {
+      for (const prompt of ["--approve", "--help", "@/tmp/secret", "-leading", "  padded prompt  \\n", "emoji 😀 boundary"]) {
         results.push(await runAgent({
           cwd: process.cwd(),
           agents: [{ name: "echo", description: "echo", source: "user", systemPrompt: "" }],
@@ -544,7 +555,7 @@ test("runAgent delivers CLI-like prompts verbatim through stdin", () => {
 
     assert.deepEqual(
       results.map((result) => result.messages.at(-1).content[0].text),
-      ["--approve", "--help", "@/tmp/secret", "-leading", "  padded prompt  \n"],
+      ["--approve", "--help", "@/tmp/secret", "-leading", "  padded prompt  \n", "emoji 😀 boundary"],
     );
     assert.equal(results.every((result) => result.exitCode === 0), true);
   } finally {

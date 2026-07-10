@@ -1,11 +1,12 @@
 /**
- * Helpers for parsing Pi JSON mode events and summarizing subagent results.
+ * Helpers for parsing Pi RPC events and summarizing subagent results.
  */
 
 import { createHash } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 
 const MAX_CAPTURED_MESSAGE_BYTES = 5 * 1024 * 1024;
+const MAX_DEDUP_SIGNATURES = 8192;
 const TRUNCATION_MARKER = "\n\n[Subagent response truncated during capture]";
 
 function getSeenMessageSignatures(result) {
@@ -35,13 +36,22 @@ function serializeMessage(message) {
 function getCapturedMessageState(result) {
   if (!Object.prototype.hasOwnProperty.call(result, "__capturedMessageState")) {
     Object.defineProperty(result, "__capturedMessageState", {
-      value: { signatures: [], sizes: [], totalBytes: 0 },
+      value: { sizes: [], totalBytes: 0 },
       enumerable: false,
       configurable: false,
       writable: false,
     });
   }
   return result.__capturedMessageState;
+}
+
+function rememberSignature(seen, signature) {
+  while (seen.size >= MAX_DEDUP_SIGNATURES) {
+    const oldest = seen.values().next().value;
+    if (oldest === undefined) break;
+    seen.delete(oldest);
+  }
+  seen.add(signature);
 }
 
 function updateAssistantMetadata(result, message) {
@@ -113,8 +123,6 @@ function addAssistantMessage(result, message) {
   ) {
     result.messages.shift();
     capture.totalBytes -= capture.sizes.shift() ?? 0;
-    const evictedSignature = capture.signatures.shift();
-    if (evictedSignature) seen.delete(evictedSignature);
     result.captureTruncated = true;
   }
   if (bytes > MAX_CAPTURED_MESSAGE_BYTES) {
@@ -122,9 +130,8 @@ function addAssistantMessage(result, message) {
     return false;
   }
 
-  seen.add(signature);
+  rememberSignature(seen, signature);
   result.messages.push(capturedMessage);
-  capture.signatures.push(signature);
   capture.sizes.push(bytes);
   capture.totalBytes += bytes;
 

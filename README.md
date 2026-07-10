@@ -31,6 +31,8 @@ There are many subagent extensions for Pi; this one is mine.
 
 ### Install
 
+Requires Pi 0.80.5 or newer.
+
 #### Option 1: Install from npm (recommended)
 
 ```bash
@@ -171,6 +173,8 @@ Each subagent runs in a separate `pi` process:
 - No shared memory/state with the parent process.
 - No visibility into sibling subagents.
 - Its own model/tool/runtime loop.
+- Uses Pi's headless RPC mode so prompts are transported verbatim and completion follows Pi's settlement events.
+- Interactive UI requests from inherited extensions are cancelled because subagent processes have no interactive user; non-interactive extension hooks continue normally.
 - Started with `PI_OFFLINE=1` to skip startup network operations and reduce latency.
 - Inherits relevant parent CLI configuration such as extensions, provider/theme/skill flags, model/thinking/tool defaults, and custom session storage when applicable. Temporary `--approve` trust is inherited only when the child uses the same working directory; `--no-approve` is always preserved. A per-call `model` overrides the agent file's default model.
 
@@ -373,7 +377,9 @@ If any call fails, the tool result is marked as an error while still returning e
 Unknown agent: "testing-audit".
 ```
 
-Model-facing output is limited to 50KB or 2000 lines. When a result exceeds either limit, every call's status remains visible, full details remain available in the expanded TUI, and the complete summary is written to a mode-`0600` temporary file for the lifetime of the parent Pi session.
+Model-facing output is limited to 50KB or 2000 lines. When a captured result exceeds either limit, every call's status remains visible, captured details remain available in the expanded TUI, and the complete captured summary is written to a mode-`0600` temporary file for the lifetime of the parent Pi session.
+
+Process capture is separately bounded to prevent a long-running child from consuming unbounded memory. The runner retains a rolling 5MB window of assistant messages. Earlier messages and oversized tool-only messages may be omitted; oversized final text is retained in truncated form with an explicit marker. The temporary summary artifact contains the complete captured summary, not an unbounded raw event transcript.
 
 Full session metadata, including generated session ID, effective cwd, creation status, and applied initial context, is available in the tool result details and TUI expanded view.
 

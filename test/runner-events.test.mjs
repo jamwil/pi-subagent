@@ -183,6 +183,49 @@ test("bounds retained assistant messages and reports capture truncation", () => 
   assert.match(getResultSummaryText(result), /capture limit/);
 });
 
+test("keeps usage exact when capture eviction allows terminal messages to be revisited", () => {
+  const result = makeResult();
+  const makeMessage = (text, timestamp) => ({
+    role: "assistant",
+    content: [{ type: "text", text: text.repeat(3 * 1024 * 1024) }],
+    timestamp,
+    usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 5, cost: { total: 0.5 } },
+  });
+  const first = makeMessage("a", 1);
+  const second = makeMessage("b", 2);
+
+  processPiEvent({ type: "agent_start" }, result);
+  processPiEvent({ type: "message_end", message: first }, result);
+  processPiEvent({ type: "message_end", message: second }, result);
+  processPiEvent({ type: "agent_end", messages: [first, second] }, result);
+
+  assert.deepEqual(result.usage, {
+    input: 2,
+    output: 4,
+    cacheRead: 6,
+    cacheWrite: 8,
+    cost: 1,
+    contextTokens: 5,
+    turns: 2,
+  });
+});
+
+test("bounds message deduplication independently of retained output", () => {
+  const result = makeResult();
+  for (let index = 0; index < 8_300; index++) {
+    processPiEvent({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: `message-${index}` }],
+        timestamp: index,
+      },
+    }, result);
+  }
+
+  assert.equal(result.__seenMessageSignatures.size, 8_192);
+});
+
 test("retains bounded text from an oversized final assistant response", () => {
   const result = makeResult();
   const message = {
