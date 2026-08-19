@@ -174,6 +174,17 @@ function parseInitialContext(raw: unknown): InitialContext | null {
   return null;
 }
 
+function parseOptionalTimeoutMs(raw: unknown): number | null | undefined {
+  if (raw === undefined) return undefined;
+  if (
+    typeof raw !== "number" ||
+    !Number.isInteger(raw) ||
+    raw < 1 ||
+    raw > MAX_TIMEOUT_SECONDS
+  ) return null;
+  return raw * 1000;
+}
+
 function buildParentSessionSnapshotJsonl(
   sessionManager: SessionSnapshotSource,
 ): string | null {
@@ -432,34 +443,18 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
       return { error: `calls[${index}].initialContext must be "empty" or "parent".` };
     }
 
-    let inactivityTimeoutMs: number | undefined;
-    if (call.inactivityTimeout !== undefined) {
-      if (
-        typeof call.inactivityTimeout !== "number" ||
-        !Number.isInteger(call.inactivityTimeout) ||
-        call.inactivityTimeout < 1 ||
-        call.inactivityTimeout > MAX_TIMEOUT_SECONDS
-      ) {
-        return {
-          error: `calls[${index}].inactivityTimeout must be an integer between 1 and ${MAX_TIMEOUT_SECONDS} seconds when provided.`,
-        };
-      }
-      inactivityTimeoutMs = call.inactivityTimeout * 1000;
+    const inactivityTimeoutMs = parseOptionalTimeoutMs(call.inactivityTimeout);
+    if (inactivityTimeoutMs === null) {
+      return {
+        error: `calls[${index}].inactivityTimeout must be an integer between 1 and ${MAX_TIMEOUT_SECONDS} seconds when provided.`,
+      };
     }
 
-    let timeoutMs: number | undefined;
-    if (call.timeout !== undefined) {
-      if (
-        typeof call.timeout !== "number" ||
-        !Number.isInteger(call.timeout) ||
-        call.timeout < 1 ||
-        call.timeout > MAX_TIMEOUT_SECONDS
-      ) {
-        return {
-          error: `calls[${index}].timeout must be an integer between 1 and ${MAX_TIMEOUT_SECONDS} seconds when provided.`,
-        };
-      }
-      timeoutMs = call.timeout * 1000;
+    const timeoutMs = parseOptionalTimeoutMs(call.timeout);
+    if (timeoutMs === null) {
+      return {
+        error: `calls[${index}].timeout must be an integer between 1 and ${MAX_TIMEOUT_SECONDS} seconds when provided.`,
+      };
     }
 
     let effectiveCwd: string;

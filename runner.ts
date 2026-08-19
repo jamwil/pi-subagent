@@ -499,6 +499,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         }
       };
 
+      const clearRunWatchdogs = () => {
+        clearInactivityTimeoutTimer();
+        clearRunTimeoutTimer();
+      };
+
       const clearRpcHandledTimer = () => {
         if (rpcHandledTimer) {
           clearTimeout(rpcHandledTimer);
@@ -534,8 +539,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       const terminateChild = () => {
         if (terminationStarted) return;
         terminationStarted = true;
-        clearInactivityTimeoutTimer();
-        clearRunTimeoutTimer();
+        clearRunWatchdogs();
 
         if (isWindows) {
           if (proc.pid !== undefined) {
@@ -560,20 +564,26 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         }, TERMINATION_SETTLE_TIMEOUT_MS);
       };
 
+      const failAndTerminate = (message: string) => {
+        result.processError = true;
+        result.stopReason = "error";
+        result.errorMessage = message;
+        if (!result.stderr.includes(message)) {
+          appendStderr(`${result.stderr ? "\n" : ""}${message}`);
+        }
+        forcedExitCode = 1;
+        terminateChild();
+      };
+
       const resetInactivityTimeout = () => {
         if (inactivityTimeoutMs === undefined || didClose || settled || terminationStarted) return;
         clearInactivityTimeoutTimer();
         inactivityTimeoutTimer = setTimeout(() => {
           if (didClose || settled || terminationStarted) return;
           const timeoutSeconds = inactivityTimeoutMs / 1000;
-          result.processError = true;
-          result.stopReason = "error";
-          result.errorMessage = `Subagent produced no child RPC stdout activity for ${timeoutSeconds}s and exceeded its inactivity timeout.`;
-          if (!result.stderr.includes(result.errorMessage)) {
-            appendStderr(`${result.stderr ? "\n" : ""}${result.errorMessage}`);
-          }
-          forcedExitCode = 1;
-          terminateChild();
+          failAndTerminate(
+            `Subagent produced no child RPC stdout activity for ${timeoutSeconds}s and exceeded its inactivity timeout.`,
+          );
         }, inactivityTimeoutMs);
         inactivityTimeoutTimer.unref();
       };
@@ -584,14 +594,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         runTimeoutTimer = setTimeout(() => {
           if (didClose || settled) return;
           const timeoutSeconds = timeoutMs / 1000;
-          result.processError = true;
-          result.stopReason = "error";
-          result.errorMessage = `Subagent exceeded its configured ${timeoutSeconds}s run timeout.`;
-          if (!result.stderr.includes(result.errorMessage)) {
-            appendStderr(`${result.stderr ? "\n" : ""}${result.errorMessage}`);
-          }
-          forcedExitCode = 1;
-          terminateChild();
+          failAndTerminate(`Subagent exceeded its configured ${timeoutSeconds}s run timeout.`);
         }, timeoutMs);
         runTimeoutTimer.unref();
       }
@@ -601,8 +604,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         settled = true;
         clearSemanticCompletionTimer();
         clearPersistentSessionExitTimer();
-        clearInactivityTimeoutTimer();
-        clearRunTimeoutTimer();
+        clearRunWatchdogs();
         clearRpcHandledTimer();
         if (sigkillTimer) clearTimeout(sigkillTimer);
         if (terminationSettleTimer) clearTimeout(terminationSettleTimer);
@@ -679,14 +681,9 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
           if (!persistentSessionExitTimer) {
             persistentSessionExitTimer = setTimeout(() => {
               if (didClose || settled || !result.sawAgentSettled) return;
-              result.processError = true;
-              result.stopReason = "error";
-              result.errorMessage = `Named subagent session did not exit within ${PERSISTENT_SESSION_EXIT_TIMEOUT_MS}ms after settling; terminated to avoid hanging.`;
-              if (!result.stderr.includes(result.errorMessage)) {
-                appendStderr(`${result.stderr ? "\n" : ""}${result.errorMessage}`);
-              }
-              forcedExitCode = 1;
-              terminateChild();
+              failAndTerminate(
+                `Named subagent session did not exit within ${PERSISTENT_SESSION_EXIT_TIMEOUT_MS}ms after settling; terminated to avoid hanging.`,
+              );
             }, PERSISTENT_SESSION_EXIT_TIMEOUT_MS);
             persistentSessionExitTimer.unref();
           }
