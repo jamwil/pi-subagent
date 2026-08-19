@@ -76,6 +76,31 @@ test("shortenPath only shortens the home directory and its descendants", async (
   }
 });
 
+test("call renderer marks parent cloning and distinguishes inactivity from wall timeout", async () => {
+  const { moduleUrl, cleanup } = createTestableRenderModule();
+  try {
+    const { renderCall } = await import(moduleUrl);
+    const component = renderCall(
+      {
+        calls: [{
+          agent: "review",
+          prompt: "Review this",
+          initialContext: "parent",
+          inactivityTimeout: 30,
+          timeout: 300,
+        }],
+      },
+      theme,
+    );
+
+    assert.match(component.text, /⚠ parent context requested/);
+    assert.match(component.text, /idle=30s/);
+    assert.match(component.text, /wall=300s/);
+  } finally {
+    cleanup();
+  }
+});
+
 test("expanded renderer tolerates legacy pre-prompt results with task", async () => {
   const { moduleUrl, cleanup } = createTestableRenderModule();
   try {

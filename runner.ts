@@ -253,7 +253,9 @@ export interface RunAgentOptions {
   maxDepth: number;
   /** Whether cycle prevention should be enforced in child processes. */
   preventCycles: boolean;
-  /** Optional wall-clock timeout for the child run. Omitted means unlimited. */
+  /** Optional per-call inactivity timeout. Overrides the agent default. */
+  inactivityTimeoutMs?: number;
+  /** Optional exceptional wall-clock deadline for the child run. */
   timeoutMs?: number;
   /** Abort signal for cancellation. */
   signal?: AbortSignal;
@@ -270,6 +272,13 @@ export interface RunAgentOptions {
  */
 export function isSameWorkingDirectory(left: string, right: string): boolean {
   return fs.realpathSync(left) === fs.realpathSync(right);
+}
+
+export function resolveInactivityTimeoutMs(
+  callTimeoutMs: number | undefined,
+  agentTimeoutSeconds: number | undefined,
+): number | undefined {
+  return callTimeoutMs ?? (agentTimeoutSeconds === undefined ? undefined : agentTimeoutSeconds * 1000);
 }
 
 export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
@@ -289,6 +298,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     parentAgentStack,
     maxDepth,
     preventCycles,
+    inactivityTimeoutMs: callInactivityTimeoutMs,
     timeoutMs,
     signal,
     onUpdate,
@@ -334,6 +344,11 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       errorMessage: message,
     };
   }
+
+  const inactivityTimeoutMs = resolveInactivityTimeoutMs(
+    callInactivityTimeoutMs,
+    agent.inactivityTimeout,
+  );
 
   const result: SingleResult = {
     callIndex,
@@ -438,6 +453,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       let abortHandler: (() => void) | undefined;
       let semanticCompletionTimer: NodeJS.Timeout | undefined;
       let persistentSessionExitTimer: NodeJS.Timeout | undefined;
+      let inactivityTimeoutTimer: NodeJS.Timeout | undefined;
       let runTimeoutTimer: NodeJS.Timeout | undefined;
       let rpcHandledTimer: NodeJS.Timeout | undefined;
       let sigkillTimer: NodeJS.Timeout | undefined;
@@ -466,6 +482,13 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         if (persistentSessionExitTimer) {
           clearTimeout(persistentSessionExitTimer);
           persistentSessionExitTimer = undefined;
+        }
+      };
+
+      const clearInactivityTimeoutTimer = () => {
+        if (inactivityTimeoutTimer) {
+          clearTimeout(inactivityTimeoutTimer);
+          inactivityTimeoutTimer = undefined;
         }
       };
 
@@ -511,6 +534,8 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       const terminateChild = () => {
         if (terminationStarted) return;
         terminationStarted = true;
+        clearInactivityTimeoutTimer();
+        clearRunTimeoutTimer();
 
         if (isWindows) {
           if (proc.pid !== undefined) {
@@ -535,6 +560,26 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         }, TERMINATION_SETTLE_TIMEOUT_MS);
       };
 
+      const resetInactivityTimeout = () => {
+        if (inactivityTimeoutMs === undefined || didClose || settled || terminationStarted) return;
+        clearInactivityTimeoutTimer();
+        inactivityTimeoutTimer = setTimeout(() => {
+          if (didClose || settled || terminationStarted) return;
+          const timeoutSeconds = inactivityTimeoutMs / 1000;
+          result.processError = true;
+          result.stopReason = "error";
+          result.errorMessage = `Subagent produced no child RPC stdout activity for ${timeoutSeconds}s and exceeded its inactivity timeout.`;
+          if (!result.stderr.includes(result.errorMessage)) {
+            appendStderr(`${result.stderr ? "\n" : ""}${result.errorMessage}`);
+          }
+          forcedExitCode = 1;
+          terminateChild();
+        }, inactivityTimeoutMs);
+        inactivityTimeoutTimer.unref();
+      };
+
+      resetInactivityTimeout();
+
       if (timeoutMs !== undefined) {
         runTimeoutTimer = setTimeout(() => {
           if (didClose || settled) return;
@@ -556,6 +601,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         settled = true;
         clearSemanticCompletionTimer();
         clearPersistentSessionExitTimer();
+        clearInactivityTimeoutTimer();
         clearRunTimeoutTimer();
         clearRpcHandledTimer();
         if (sigkillTimer) clearTimeout(sigkillTimer);
@@ -662,6 +708,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       };
 
       const onStdoutData = (chunk: Buffer) => {
+        resetInactivityTimeout();
         buffer += stdoutDecoder.write(chunk);
         const lines = buffer.split(/\r?\n/);
         buffer = lines.pop() || "";
@@ -722,7 +769,6 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         abortHandler = () => {
           if (didClose || settled) return;
           wasAborted = true;
-          clearRunTimeoutTimer();
           terminateChild();
         };
         if (signal.aborted) abortHandler();

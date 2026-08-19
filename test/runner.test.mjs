@@ -341,6 +341,18 @@ test("compares working directories by canonical path", {
   }
 });
 
+test("per-call inactivity timeout overrides the agent default", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { resolveInactivityTimeoutMs } = await import(moduleUrl);
+    assert.equal(resolveInactivityTimeoutMs(undefined, undefined), undefined);
+    assert.equal(resolveInactivityTimeoutMs(undefined, 12), 12_000);
+    assert.equal(resolveInactivityTimeoutMs(3_000, 12), 3_000);
+  } finally {
+    cleanup();
+  }
+});
+
 test("rewriteSessionHeaderCwd updates only the session header cwd", async () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   try {
@@ -756,6 +768,113 @@ test("runAgent does not treat an accepted streaming prompt as handled", () => {
   }
 });
 
+test("runAgent terminates a silent child after its inactivity timeout", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-inactivity-"));
+  const harnessPath = path.join(tmpDir, "inactivity-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      setInterval(() => {}, 1000);
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const result = await runAgent({
+        cwd: process.cwd(),
+        agents: [{ name: "silent", description: "silent", source: "user", systemPrompt: "" }],
+        callIndex: 0,
+        agentName: "silent",
+        prompt: "hello",
+        initialContext: "empty",
+        parentDepth: 0,
+        parentAgentStack: [],
+        maxDepth: 3,
+        preventCycles: true,
+        inactivityTimeoutMs: 300,
+        makeDetails: (results) => ({ kind: "pi-subagent", projectAgentsDir: null, results }),
+      });
+      process.stdout.write(JSON.stringify(result));
+    }`,
+  );
+
+  try {
+    const result = JSON.parse(execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+      encoding: "utf8",
+      timeout: 10_000,
+    }));
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.processError, true);
+    assert.match(result.errorMessage, /child RPC stdout activity.*inactivity timeout/);
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("runAgent resets inactivity only for child stdout activity", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-activity-"));
+  const harnessPath = path.join(tmpDir, "activity-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `const mode = process.env.PI_SUBAGENT_ACTIVITY_CASE;
+    if (process.argv.includes("--mode")) {
+      let count = 0;
+      const stream = mode === "stdout" ? process.stdout : process.stderr;
+      const timer = setInterval(() => {
+        stream.write(".");
+        count++;
+        if (mode === "stdout" && count === 6) {
+          clearInterval(timer);
+          const message = { role: "assistant", content: [{ type: "text", text: "done" }], stopReason: "stop", timestamp: 1 };
+          process.stdout.write("\\n" + JSON.stringify({ type: "message_end", message }) + "\\n");
+          process.stdout.write(JSON.stringify({ type: "agent_end", messages: [message] }) + "\\n");
+          process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+        }
+      }, 100);
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const results = [];
+      for (const mode of ["stdout", "stderr"]) {
+        process.env.PI_SUBAGENT_ACTIVITY_CASE = mode;
+        results.push(await runAgent({
+          cwd: process.cwd(),
+          agents: [{ name: "activity", description: "activity", source: "user", systemPrompt: "" }],
+          callIndex: 0,
+          agentName: "activity",
+          prompt: "hello",
+          initialContext: "empty",
+          parentDepth: 0,
+          parentAgentStack: [],
+          maxDepth: 3,
+          preventCycles: true,
+          inactivityTimeoutMs: 300,
+          makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+        }));
+      }
+      delete process.env.PI_SUBAGENT_ACTIVITY_CASE;
+      process.stdout.write(JSON.stringify(results));
+    }`,
+  );
+
+  try {
+    const [stdoutResult, stderrResult] = JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    );
+    assert.equal(stdoutResult.exitCode, 0);
+    assert.equal(stdoutResult.messages.at(-1).content[0].text, "done");
+    assert.equal(stderrResult.exitCode, 1);
+    assert.match(stderrResult.errorMessage, /inactivity timeout/);
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("runAgent enforces an explicitly configured wall-clock timeout", () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-timeout-"));
@@ -804,12 +923,13 @@ test("runAgent enforces an explicitly configured wall-clock timeout", () => {
 });
 
 test(
-  "runAgent timeout terminates Unix descendant processes",
+  "runAgent inactivity timeout terminates Unix descendant processes",
   { skip: process.platform === "win32" },
   () => {
     const { moduleUrl, cleanup } = createTestableRunnerModule();
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-tree-"));
     const harnessPath = path.join(tmpDir, "tree-harness.mjs");
+    const readyPath = path.join(tmpDir, "descendant-ready");
     const markerPath = path.join(tmpDir, "descendant-marker");
 
     fs.writeFileSync(
@@ -817,7 +937,7 @@ test(
       `import fs from "node:fs";
       import { spawn } from "node:child_process";
       if (process.argv.includes("--mode")) {
-        spawn(process.execPath, ["-e", ${JSON.stringify(`process.on("SIGTERM", () => {}); setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(markerPath)}, "alive"), 1000)`) }], { stdio: "ignore" });
+        spawn(process.execPath, ["-e", ${JSON.stringify(`const fs = require("node:fs"); fs.writeFileSync(${JSON.stringify(readyPath)}, "ready"); process.on("SIGTERM", () => {}); setTimeout(() => fs.writeFileSync(${JSON.stringify(markerPath)}, "alive"), 1200)`) }], { stdio: "ignore" });
         setInterval(() => {}, 1000);
       } else {
         const { runAgent } = await import(${JSON.stringify(moduleUrl)});
@@ -832,11 +952,15 @@ test(
           parentAgentStack: [],
           maxDepth: 3,
           preventCycles: true,
-          timeoutMs: 100,
+          inactivityTimeoutMs: 500,
           makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
         });
-        await new Promise((resolve) => setTimeout(resolve, 1300));
-        process.stdout.write(JSON.stringify({ result, markerExists: fs.existsSync(${JSON.stringify(markerPath)}) }));
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        process.stdout.write(JSON.stringify({
+          result,
+          descendantStarted: fs.existsSync(${JSON.stringify(readyPath)}),
+          markerExists: fs.existsSync(${JSON.stringify(markerPath)}),
+        }));
       }`,
     );
 
@@ -848,6 +972,7 @@ test(
         }),
       );
       assert.equal(output.result.processError, true);
+      assert.equal(output.descendantStarted, true);
       assert.equal(output.markerExists, false);
     } finally {
       cleanup();

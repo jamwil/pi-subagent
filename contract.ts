@@ -16,7 +16,7 @@ export interface DelegationGuardSummary {
 }
 
 interface CallFieldContract {
-  name: "agent" | "prompt" | "model" | "cwd" | "initialContext" | "session" | "timeout";
+  name: "agent" | "prompt" | "model" | "cwd" | "initialContext" | "session" | "inactivityTimeout" | "timeout";
   required: boolean;
   schemaDescription: string;
   promptDescription: string;
@@ -54,9 +54,9 @@ export const CALL_FIELDS: CallFieldContract[] = [
     name: "initialContext",
     required: false,
     schemaDescription:
-      "Initial context for a newly-created child conversation: 'empty' (default) or 'parent'. Existing named sessions ignore this field.",
+      "Initial context for a newly-created child conversation: 'empty' (default) or 'parent'. Parent cloning is expensive and carries the parent's authority; prefer empty and pass relevant context deliberately. Existing named sessions ignore this field.",
     promptDescription:
-      '`"empty"` (default) starts without parent history; `"parent"` seeds a newly-created child conversation from the current parent session snapshot. Existing named sessions ignore this field',
+      '`"empty"` (default) starts without parent history; `"parent"` exceptionally clones the current parent session snapshot, which is expensive and carries the parent conversation\'s authority. Prefer empty and pass relevant context deliberately. Existing named sessions ignore this field',
   },
   {
     name: "session",
@@ -67,12 +67,20 @@ export const CALL_FIELDS: CallFieldContract[] = [
       "durable conversation handle. If present, the call continues or creates a persistent child Pi session. The handle is scoped by parent session, effective cwd, and agent name. The same handle used with different agents resolves to different sessions. Requires a persisted parent Pi session",
   },
   {
+    name: "inactivityTimeout",
+    required: false,
+    schemaDescription:
+      "Optional positive integer inactivity timeout in seconds. Overrides the agent default. Resets only when the child emits RPC stdout activity; omitted uses the agent default, or no inactivity timeout.",
+    promptDescription:
+      "positive integer inactivity timeout in seconds. Overrides the agent default; otherwise the agent default applies, or there is no inactivity timeout. It resets only on child RPC stdout activity",
+  },
+  {
     name: "timeout",
     required: false,
     schemaDescription:
-      "Optional positive integer wall-clock timeout in seconds for this call. Omitted means no run timeout.",
+      "Optional exceptional positive integer absolute wall-clock deadline in seconds. Independent of inactivityTimeout. Omit for ordinary stuck-run protection.",
     promptDescription:
-      "positive integer wall-clock timeout in seconds. Omit it to allow an unlimited run",
+      "exceptional positive integer absolute wall-clock deadline in seconds, independent of `inactivityTimeout`. Omit it for ordinary stuck-run protection",
   },
 ];
 
@@ -96,6 +104,7 @@ function formatDelegationRules(): string {
     "- Do not use the same resolved session in more than one concurrent call. Same handle + same agent + same cwd conflicts; same handle + different agent is allowed. If a stale session lock is reported, remove the lock directory only after confirming no subagent is still running.",
     "- Use `session` for multi-turn specialist work; omit it for one-off delegation, when the parent is running with `--no-session`, or from temporary parent-seeded subagent sessions.",
     "- Agent-specific session preference and hint lines are advisory only. The tool creates or continues a persistent session only when a call includes `session`.",
+    "- Prefer `initialContext: \"empty\"` and pass relevant task context deliberately. Parent cloning is exceptional because it is expensive and carries the parent conversation's authority.",
   ].join("\n");
 }
 
@@ -126,6 +135,9 @@ function oneLine(text: string): string {
 
 export function formatAgentForPrompt(agent: AgentConfig): string {
   const lines = [`- **${agent.name}** (${agent.source}): ${agent.description}`];
+  if (agent.inactivityTimeout) {
+    lines.push(`  Inactivity timeout default: ${agent.inactivityTimeout}s (child RPC stdout inactivity).`);
+  }
   if (agent.sessionPreference) {
     lines.push(
       `  Session preference: ${agent.sessionPreference} — ${formatSessionPreference(agent.sessionPreference)}`,
@@ -190,6 +202,6 @@ export function formatSubagentToolDescription(): string {
     "Multiple calls may run concurrently.",
     "Model-facing output is capped at Pi's standard 50KB/2000-line limits; full truncated output is saved to a temporary file for the active session.",
     "",
-    'Example: { calls: [{ agent: "review", prompt: "Review this diff", model: "anthropic/claude-sonnet-4", session: "api-review", initialContext: "parent" }] }',
+    'Example: { calls: [{ agent: "review", prompt: "Review this diff", model: "anthropic/claude-sonnet-4", session: "api-review", initialContext: "empty" }] }',
   ].join("\n");
 }

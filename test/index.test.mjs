@@ -96,6 +96,11 @@ test("subagent schema uses a Google-compatible initialContext enum", () => {
   assert.equal(initialContext.anyOf, undefined);
   assert.equal(initialContext.oneOf, undefined);
 
+  const inactivityTimeout = schema.properties.calls.items.properties.inactivityTimeout;
+  assert.equal(inactivityTimeout.type, "integer");
+  assert.equal(inactivityTimeout.minimum, 1);
+  assert.equal(inactivityTimeout.maximum > 1, true);
+
   const timeout = schema.properties.calls.items.properties.timeout;
   assert.equal(timeout.type, "integer");
   assert.equal(timeout.minimum, 1);
@@ -197,6 +202,16 @@ test("extension lifecycle excludes untrusted project agents consistently", async
     );
     assert.equal(invalidTimeout.details.failed, true);
     assert.match(invalidTimeout.content[0].text, /timeout must be an integer/);
+
+    const invalidInactivityTimeout = await harness.tools.get("subagent").execute(
+      "invalid-inactivity-timeout",
+      { calls: [{ agent: "project-only", prompt: "hello", inactivityTimeout: 1.5 }] },
+      undefined,
+      undefined,
+      ctx,
+    );
+    assert.equal(invalidInactivityTimeout.details.failed, true);
+    assert.match(invalidInactivityTimeout.content[0].text, /inactivityTimeout must be an integer/);
 
     const result = await harness.tools.get("subagent").execute(
       "call-1",

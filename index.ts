@@ -98,6 +98,13 @@ const CallItem = Type.Object({
       maxLength: SESSION_HANDLE_MAX_LENGTH,
     }),
   ),
+  inactivityTimeout: Type.Optional(
+    Type.Integer({
+      description: getCallFieldSchemaDescription("inactivityTimeout"),
+      minimum: 1,
+      maximum: MAX_TIMEOUT_SECONDS,
+    }),
+  ),
   timeout: Type.Optional(
     Type.Integer({
       description: getCallFieldSchemaDescription("timeout"),
@@ -141,6 +148,7 @@ interface NormalizedCall {
   initialContext: InitialContext;
   sessionHandle?: string;
   session?: SubagentSessionDetails;
+  inactivityTimeoutMs?: number;
   timeoutMs?: number;
 }
 
@@ -424,6 +432,21 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
       return { error: `calls[${index}].initialContext must be "empty" or "parent".` };
     }
 
+    let inactivityTimeoutMs: number | undefined;
+    if (call.inactivityTimeout !== undefined) {
+      if (
+        typeof call.inactivityTimeout !== "number" ||
+        !Number.isInteger(call.inactivityTimeout) ||
+        call.inactivityTimeout < 1 ||
+        call.inactivityTimeout > MAX_TIMEOUT_SECONDS
+      ) {
+        return {
+          error: `calls[${index}].inactivityTimeout must be an integer between 1 and ${MAX_TIMEOUT_SECONDS} seconds when provided.`,
+        };
+      }
+      inactivityTimeoutMs = call.inactivityTimeout * 1000;
+    }
+
     let timeoutMs: number | undefined;
     if (call.timeout !== undefined) {
       if (
@@ -485,6 +508,7 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
       effectiveCwd,
       initialContext,
       sessionHandle,
+      inactivityTimeoutMs,
       timeoutMs,
     });
   }
@@ -999,6 +1023,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
               parentAgentStack: ancestorAgentStack,
               maxDepth,
               preventCycles,
+              inactivityTimeoutMs: call.inactivityTimeoutMs,
               timeoutMs: call.timeoutMs,
               signal,
               onUpdate: (partial) => {

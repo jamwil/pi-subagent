@@ -24,7 +24,8 @@ There are many subagent extensions for Pi; this one is mine.
 - **Unified Delegation** — One extension handles one specialist call or many parallel calls.
 - **Named Persistent Sessions** — Continue specialist subagents across multiple turns when useful.
 - **Agent Session Guidance** — Agent definitions can advise when persistent or ephemeral calls fit best.
-- **Context Control** — A subagent can start fresh or from the parent conversation snapshot.
+- **Context Control** — Subagents start fresh by default; explicit parent snapshot cloning remains available for exceptional cases.
+- **Inactivity Watchdog** — Stop silent child runs while allowing active RPC streams to continue.
 - **Depth + Cycle Guards** — Prevent runaway recursive delegation.
 - **Streaming Updates** — Watch progress in real time.
 - **Rich TUI Rendering** — Collapsed/expanded views with usage stats, tool calls, markdown output, and session metadata.
@@ -134,6 +135,7 @@ You review code changes. Focus on substantive issues, cite files and lines, and 
 | `description` | Yes | — | What the agent does; shown to the main agent. |
 | `model` | No | Parent/default Pi model | Sets the default model for this agent. A per-call `model` overrides it. Supports provider-prefixed values such as `anthropic/claude-3-5-sonnet`. |
 | `thinking` | No | Parent/default Pi thinking level | Sets the thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). |
+| `inactivityTimeout` | No | No inactivity timeout | Positive integer seconds a child may produce no RPC stdout activity before its process tree is terminated. A per-call value overrides this default. |
 | `tools` | No | Parent/default Pi tools | Comma-separated allowlist of tool names to enable for this agent. Omitted or empty values inherit the parent configuration. |
 | `noTools` | No | `false` | Set to `true` to disable all built-in, extension, and custom tools for this agent. |
 | `sessionPreference` | No | — | Advisory machine-readable hint for the main agent. One of `ephemeral`, `persistent`, or `either`. |
@@ -143,6 +145,7 @@ Notes:
 
 - Agent `model` is a default for that agent, not a lock. A `model` supplied in a subagent call wins.
 - `tools` is passed to Pi's `--tools` allowlist and can include built-in or extension tool names. `noTools: true` takes precedence over `tools`.
+- `inactivityTimeout` observes child RPC stdout bytes only. Child stderr and parent-generated progress updates do not keep a silent child alive.
 - `sessionPreference` and `sessionHint` only guide the main agent. They do not automatically create, require, or name persistent sessions.
 - `sessionHint` can be used by itself for free-form guidance; the extension does not infer `sessionPreference` from it.
 - The Markdown body becomes the agent's system prompt and is appended to Pi's default system prompt.
@@ -203,9 +206,10 @@ A tool invocation accepts between 1 and 8 calls. Each call supports:
 | `prompt` | Yes | — | Non-empty prompt sent verbatim to the subagent. |
 | `model` | No | Agent/default Pi model | Model to use for this call. Overrides the agent file's default model. |
 | `cwd` | No | Parent cwd | Working directory for this subagent process. |
-| `initialContext` | No | `"empty"` | `"empty"` starts a newly-created child conversation without parent history. `"parent"` seeds a newly-created child conversation from the current parent session snapshot. Existing named sessions ignore this field. |
+| `initialContext` | No | `"empty"` | `"empty"` starts without parent history. `"parent"` exceptionally clones the current parent snapshot; this is expensive and carries the parent conversation's authority. Prefer empty and pass relevant context deliberately. Existing named sessions ignore this field. |
 | `session` | No | — | Logical handle of at most 120 characters for a persistent child Pi session. Use this for multi-turn specialist work. Requires a persisted parent Pi session. |
-| `timeout` | No | Unlimited | Positive integer wall-clock timeout in seconds for this call (maximum 2,147,483). On expiry, partial output is preserved and the call fails. |
+| `inactivityTimeout` | No | Agent default or disabled | Positive integer seconds without child RPC stdout activity before termination. Overrides the agent frontmatter default. Stderr and parent progress updates do not reset it. |
+| `timeout` | No | Unlimited | Exceptional positive integer absolute wall-clock deadline in seconds (maximum 2,147,483), independent of `inactivityTimeout`. Omit it for ordinary stuck-run protection. |
 
 #### One ephemeral call
 
@@ -283,7 +287,7 @@ Continue the same specialist conversation later:
 }
 ```
 
-#### Parent-seeded named session
+#### Exceptional parent-seeded named session
 
 ```json
 {
@@ -298,7 +302,7 @@ Continue the same specialist conversation later:
 }
 ```
 
-If the named session already exists, the subagent continues it and `initialContext` is ignored. If it does not exist, the new child session is seeded from the parent snapshot.
+If the named session already exists, the subagent continues it and `initialContext` is ignored. If it does not exist, the new child session is seeded from the parent snapshot. Use this only when the full parent history and authority are genuinely required; normally use empty context and include the relevant facts in `prompt`.
 
 ### Named Session Semantics
 
@@ -338,8 +342,8 @@ Important rules:
 
 `initialContext` controls only how a newly-created child conversation starts:
 
-- `"empty"` — start without parent conversation history.
-- `"parent"` — copy the current parent session branch into the new child conversation before sending the prompt.
+- `"empty"` — start without parent conversation history. This is the default and recommended mode.
+- `"parent"` — exceptionally copy the current parent session branch into the new child conversation before sending the prompt. Cloning can be expensive and carries the parent conversation's accumulated authority and instructions; pass relevant context deliberately in the prompt instead whenever practical.
 
 Existing named sessions always continue their own history and ignore `initialContext`.
 
@@ -350,6 +354,16 @@ Calls without `session` are ephemeral:
 - with `session` — persistent child Pi session
 
 When multiple calls need `initialContext: "parent"`, they all receive the same parent snapshot captured at the start of the tool invocation.
+
+### Liveness Timeouts
+
+`inactivityTimeout` and `timeout` are independent:
+
+- `inactivityTimeout` is the normal stuck-run guard. Its countdown starts with the child run and resets only when bytes arrive on the child's RPC stdout. Stderr output and parent synthetic progress updates do not reset it.
+- `timeout` is an exceptional absolute wall-clock deadline. Activity never extends it. Omit it for ordinary stuck-run protection.
+- Either expiry preserves captured partial output, reports a distinct error, and terminates the child process tree with SIGTERM followed by SIGKILL when needed.
+
+A per-call `inactivityTimeout` overrides the selected agent's frontmatter value. If neither is configured, there is no inactivity watchdog.
 
 ### Result Format
 
