@@ -135,7 +135,7 @@ You review code changes. Focus on substantive issues, cite files and lines, and 
 | `description` | Yes | — | What the agent does; shown to the main agent. |
 | `model` | No | Parent/default Pi model | Sets the default model for this agent. A per-call `model` overrides it. Supports provider-prefixed values such as `anthropic/claude-3-5-sonnet`. |
 | `thinking` | No | Parent/default Pi thinking level | Sets the thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). |
-| `inactivityTimeout` | No | No inactivity timeout | Positive integer seconds a child may produce no RPC stdout activity before its process tree is terminated. A per-call value overrides this default. |
+| `inactivityTimeout` | No | No inactivity timeout | Positive integer seconds, up to 2,147,483, that a child may produce no RPC stdout activity before its process tree is terminated. A per-call value overrides this default. |
 | `tools` | No | Parent/default Pi tools | Comma-separated allowlist of tool names to enable for this agent. Omitted or empty values inherit the parent configuration. |
 | `noTools` | No | `false` | Set to `true` to disable all built-in, extension, and custom tools for this agent. |
 | `sessionPreference` | No | — | Advisory machine-readable hint for the main agent. One of `ephemeral`, `persistent`, or `either`. |
@@ -208,7 +208,7 @@ A tool invocation accepts between 1 and 8 calls. Each call supports:
 | `cwd` | No | Parent cwd | Working directory for this subagent process. |
 | `initialContext` | No | `"empty"` | `"empty"` starts without parent history. `"parent"` exceptionally clones the current parent snapshot; this is expensive and carries the parent conversation's authority. Prefer empty and pass relevant context deliberately. Existing named sessions ignore this field. |
 | `session` | No | — | Logical handle of at most 120 characters for a persistent child Pi session. Use this for multi-turn specialist work. Requires a persisted parent Pi session. |
-| `inactivityTimeout` | No | Agent default or disabled | Positive integer seconds without child RPC stdout activity before termination. Overrides the agent frontmatter default. Stderr and parent progress updates do not reset it. |
+| `inactivityTimeout` | No | Agent default or disabled | Positive integer seconds without child RPC stdout activity before termination (maximum 2,147,483). Overrides the agent frontmatter default. Stderr and parent progress updates do not reset it. |
 | `timeout` | No | Unlimited | Exceptional positive integer absolute wall-clock deadline in seconds (maximum 2,147,483), independent of `inactivityTimeout`. Omit it for ordinary stuck-run protection. |
 
 #### One ephemeral call
