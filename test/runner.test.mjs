@@ -811,7 +811,9 @@ test("runAgent terminates a silent child after its inactivity timeout", () => {
   }
 });
 
-test("runAgent preserves the watchdog reason when late RPC metadata arrives", () => {
+test("runAgent preserves the watchdog reason when late RPC metadata arrives", {
+  skip: process.platform === "win32",
+}, () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-late-rpc-"));
   const harnessPath = path.join(tmpDir, "late-rpc-harness.mjs");

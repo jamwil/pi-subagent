@@ -296,6 +296,28 @@ test("later assistant events invalidate pending tool-error attribution", () => {
   assert.equal(hasAttributedToolError(result), false);
 });
 
+test("late assistant metadata cannot overwrite an established process error", () => {
+  const result = makeResult();
+  result.processError = true;
+  result.stopReason = "error";
+  result.errorMessage = "Subagent exceeded its inactivity timeout.";
+
+  processPiEvent({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "Partial answer" }],
+      stopReason: "error",
+      errorMessage: "Late provider error",
+      timestamp: 1,
+    },
+  }, result);
+
+  assert.equal(result.stopReason, "error");
+  assert.equal(result.errorMessage, "Subagent exceeded its inactivity timeout.");
+  assert.equal(getFinalAssistantText(result.messages), "Partial answer");
+});
+
 test("provider errors remain visible alongside partial assistant text", () => {
   const result = makeResult();
   result.exitCode = 0;
