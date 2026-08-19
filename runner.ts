@@ -182,22 +182,13 @@ export function buildModelArgs(
     ];
   }
 
-  if (parentModel) {
-    return ["--provider", parentModel.provider, "--model", parentModel.id];
-  }
+  const inheritedModel = formatParentModel(parentModel);
+  if (inheritedModel) return ["--model", inheritedModel];
 
   return [
     ...(fallbackProvider ? ["--provider", fallbackProvider] : []),
     ...(fallbackModel ? ["--model", fallbackModel] : []),
   ];
-}
-
-function resolveRequestedModel(
-  callModel: string | undefined,
-  agentModel: string | undefined,
-  parentModel: ParentModel | undefined,
-): string | undefined {
-  return callModel ?? agentModel ?? formatParentModel(parentModel) ?? inheritedCliArgs.fallbackModel;
 }
 
 export function buildPiArgs(
@@ -392,7 +383,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       messages: [],
       stderr: message,
       usage: emptyUsage(),
-      model: resolveRequestedModel(callModel, agent.model, parentModel),
+      model: callModel ?? agent.model,
       stopReason: "error",
       errorMessage: message,
     };
@@ -414,7 +405,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     messages: [],
     stderr: "",
     usage: emptyUsage(),
-    model: resolveRequestedModel(callModel, agent.model, parentModel),
+    model: callModel ?? agent.model,
   };
 
   if (signal?.aborted) {
