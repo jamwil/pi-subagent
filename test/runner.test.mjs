@@ -25,6 +25,12 @@ function createTestableRunnerModule(options = {}) {
       `const MAX_JSON_LINE_BYTES = ${options.maxJsonLineBytes};`,
     );
   }
+  if (options.forceWindows === true) {
+    source = source.replace(
+      'const isWindows = process.platform === "win32";',
+      "const isWindows = true;",
+    );
+  }
   fs.writeFileSync(modulePath, source);
   return {
     moduleUrl: pathToFileURL(modulePath).href,
@@ -788,6 +794,48 @@ test("runAgent terminates a silent child after its inactivity timeout", () => {
     assert.equal(result.exitCode, 1);
     assert.equal(result.processError, true);
     assert.match(result.errorMessage, /child RPC stdout activity.*inactivity timeout/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runAgent handles Windows taskkill spawn failures without crashing", () => {
+  const { moduleUrl, tmpDir, harnessPath, runJson, cleanup } = createRunnerProcessHarness(
+    "taskkill-error",
+    { forceWindows: true },
+  );
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      setInterval(() => {}, 1000);
+    } else {
+      process.env.PATH = ${JSON.stringify(tmpDir)};
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const result = await runAgent({
+        cwd: process.cwd(),
+        agents: [{ name: "windows", description: "windows", source: "user", systemPrompt: "" }],
+        callIndex: 0,
+        agentName: "windows",
+        prompt: "hello",
+        initialContext: "empty",
+        parentDepth: 0,
+        parentAgentStack: [],
+        maxDepth: 3,
+        preventCycles: true,
+        inactivityTimeoutMs: 100,
+        makeDetails: (results) => ({ kind: "pi-subagent", projectAgentsDir: null, results }),
+      });
+      process.stdout.write(JSON.stringify(result));
+    }`,
+  );
+
+  try {
+    const result = runJson();
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.processError, true);
+    assert.match(result.errorMessage, /inactivity timeout/);
+    assert.match(result.stderr, /Could not start Windows taskkill/);
   } finally {
     cleanup();
   }

@@ -547,6 +547,14 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
             const killer = spawn("taskkill", ["/T", "/F", "/PID", String(proc.pid)], {
               stdio: "ignore",
             });
+            killer.once("error", (error) => {
+              recordProcessFailure(`Could not start Windows taskkill: ${error.message}`);
+              try {
+                proc.kill();
+              } catch {
+                // The process may already have exited between checks.
+              }
+            });
             killer.unref();
           }
         } else {
@@ -571,9 +579,8 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
           result.stopReason = "error";
           result.errorMessage = message;
         }
-        const recordedMessage = result.errorMessage || message;
-        if (!result.stderr.includes(recordedMessage)) {
-          appendStderr(`${result.stderr ? "\n" : ""}${recordedMessage}`);
+        if (!result.stderr.includes(message)) {
+          appendStderr(`${result.stderr ? "\n" : ""}${message}`);
         }
         forcedExitCode = 1;
       };
