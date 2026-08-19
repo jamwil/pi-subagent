@@ -47,7 +47,7 @@ export interface StarterAgentDiscoveryResult {
 export const STARTER_AGENT_NAME = "explore";
 export const STARTER_AGENT_FILE_NAME = "explore.md";
 
-const MAX_TIMER_SECONDS = Math.floor(2_147_483_647 / 1000);
+export const MAX_TIMER_SECONDS = Math.floor(2_147_483_647 / 1000);
 
 const STARTER_AGENT_MARKDOWN = `---
 name: explore

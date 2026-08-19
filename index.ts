@@ -17,7 +17,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { type AgentConfig, STARTER_AGENT_NAME, discoverAgentsWithStarter } from "./agents.js";
+import {
+  type AgentConfig,
+  MAX_TIMER_SECONDS,
+  STARTER_AGENT_NAME,
+  discoverAgentsWithStarter,
+} from "./agents.js";
 import {
   CALLS_SCHEMA_DESCRIPTION,
   formatAvailableSubagentsPrompt,
@@ -58,7 +63,6 @@ const SUBAGENT_TEMP_PARENT_SESSION_ENV = "PI_SUBAGENT_TEMP_PARENT_SESSION";
 const SESSION_ID_NAMESPACE = "pi-subagent/v1";
 const SESSION_ID_PREFIX = "subagent.";
 const SESSION_HANDLE_MAX_LENGTH = 120;
-const MAX_TIMEOUT_SECONDS = Math.floor(2_147_483_647 / 1000);
 
 // ---------------------------------------------------------------------------
 // Tool parameter schema
@@ -102,14 +106,14 @@ const CallItem = Type.Object({
     Type.Integer({
       description: getCallFieldSchemaDescription("inactivityTimeout"),
       minimum: 1,
-      maximum: MAX_TIMEOUT_SECONDS,
+      maximum: MAX_TIMER_SECONDS,
     }),
   ),
   timeout: Type.Optional(
     Type.Integer({
       description: getCallFieldSchemaDescription("timeout"),
       minimum: 1,
-      maximum: MAX_TIMEOUT_SECONDS,
+      maximum: MAX_TIMER_SECONDS,
     }),
   ),
 });
@@ -180,7 +184,7 @@ function parseOptionalTimeoutMs(raw: unknown): number | null | undefined {
     typeof raw !== "number" ||
     !Number.isInteger(raw) ||
     raw < 1 ||
-    raw > MAX_TIMEOUT_SECONDS
+    raw > MAX_TIMER_SECONDS
   ) return null;
   return raw * 1000;
 }
@@ -446,14 +450,14 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
     const inactivityTimeoutMs = parseOptionalTimeoutMs(call.inactivityTimeout);
     if (inactivityTimeoutMs === null) {
       return {
-        error: `calls[${index}].inactivityTimeout must be an integer between 1 and ${MAX_TIMEOUT_SECONDS} seconds when provided.`,
+        error: `calls[${index}].inactivityTimeout must be an integer between 1 and ${MAX_TIMER_SECONDS} seconds when provided.`,
       };
     }
 
     const timeoutMs = parseOptionalTimeoutMs(call.timeout);
     if (timeoutMs === null) {
       return {
-        error: `calls[${index}].timeout must be an integer between 1 and ${MAX_TIMEOUT_SECONDS} seconds when provided.`,
+        error: `calls[${index}].timeout must be an integer between 1 and ${MAX_TIMER_SECONDS} seconds when provided.`,
       };
     }
 
