@@ -32,6 +32,28 @@ function createTestableRunnerModule(options = {}) {
   };
 }
 
+function createRunnerProcessHarness(name, runnerOptions = {}) {
+  const runnerModule = createTestableRunnerModule(runnerOptions);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-subagent-${name}-`));
+  const harnessPath = path.join(tmpDir, `${name}-harness.mjs`);
+
+  return {
+    moduleUrl: runnerModule.moduleUrl,
+    tmpDir,
+    harnessPath,
+    runJson: () => JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    ),
+    cleanup: () => {
+      runnerModule.cleanup();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    },
+  };
+}
+
 function makeResult(overrides = {}) {
   return {
     agent: "oracle",
@@ -457,9 +479,7 @@ test("runAgent converts synchronous spawn failures into structured results", asy
 });
 
 test("runAgent waits for agent_settled across multiple low-level runs", () => {
-  const { moduleUrl, cleanup } = createTestableRunnerModule();
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-settled-"));
-  const harnessPath = path.join(tmpDir, "settled-harness.mjs");
+  const { moduleUrl, harnessPath, runJson, cleanup } = createRunnerProcessHarness("settled");
 
   fs.writeFileSync(
     harnessPath,
@@ -492,12 +512,7 @@ test("runAgent waits for agent_settled across multiple low-level runs", () => {
   );
 
   try {
-    const result = JSON.parse(
-      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
-        encoding: "utf8",
-        timeout: 10_000,
-      }),
-    );
+    const result = runJson();
     assert.equal(result.exitCode, 0);
     assert.equal(result.sawAgentSettled, true);
     assert.deepEqual(
@@ -506,14 +521,11 @@ test("runAgent waits for agent_settled across multiple low-level runs", () => {
     );
   } finally {
     cleanup();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
 test("runAgent delivers CLI-like prompts verbatim through stdin", () => {
-  const { moduleUrl, cleanup } = createTestableRunnerModule();
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-stdin-"));
-  const harnessPath = path.join(tmpDir, "stdin-harness.mjs");
+  const { moduleUrl, harnessPath, runJson, cleanup } = createRunnerProcessHarness("stdin");
 
   fs.writeFileSync(
     harnessPath,
@@ -564,12 +576,7 @@ test("runAgent delivers CLI-like prompts verbatim through stdin", () => {
   );
 
   try {
-    const results = JSON.parse(
-      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
-        encoding: "utf8",
-        timeout: 10_000,
-      }),
-    );
+    const results = runJson();
 
     assert.deepEqual(
       results.map((result) => result.messages.at(-1).content[0].text),
@@ -578,14 +585,11 @@ test("runAgent delivers CLI-like prompts verbatim through stdin", () => {
     assert.equal(results.every((result) => result.exitCode === 0), true);
   } finally {
     cleanup();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
 test("runAgent auto-cancels inherited RPC extension dialogs", () => {
-  const { moduleUrl, cleanup } = createTestableRunnerModule();
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-dialog-"));
-  const harnessPath = path.join(tmpDir, "dialog-harness.mjs");
+  const { moduleUrl, harnessPath, runJson, cleanup } = createRunnerProcessHarness("dialog");
 
   fs.writeFileSync(
     harnessPath,
@@ -631,24 +635,16 @@ test("runAgent auto-cancels inherited RPC extension dialogs", () => {
   );
 
   try {
-    const result = JSON.parse(
-      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
-        encoding: "utf8",
-        timeout: 10_000,
-      }),
-    );
+    const result = runJson();
     assert.equal(result.exitCode, 0);
     assert.equal(result.messages.at(-1).content[0].text, "true");
   } finally {
     cleanup();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
 test("runAgent settles prompts handled without an agent run", () => {
-  const { moduleUrl, cleanup } = createTestableRunnerModule();
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-handled-"));
-  const harnessPath = path.join(tmpDir, "handled-harness.mjs");
+  const { moduleUrl, harnessPath, runJson, cleanup } = createRunnerProcessHarness("handled");
 
   fs.writeFileSync(
     harnessPath,
@@ -690,25 +686,17 @@ test("runAgent settles prompts handled without an agent run", () => {
   );
 
   try {
-    const result = JSON.parse(
-      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
-        encoding: "utf8",
-        timeout: 10_000,
-      }),
-    );
+    const result = runJson();
     assert.equal(result.exitCode, 0);
     assert.equal(result.handledWithoutAgent, true);
     assert.equal(result.sawAgentSettled, true);
   } finally {
     cleanup();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
 test("runAgent does not treat an accepted streaming prompt as handled", () => {
-  const { moduleUrl, cleanup } = createTestableRunnerModule();
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-accepted-"));
-  const harnessPath = path.join(tmpDir, "accepted-harness.mjs");
+  const { moduleUrl, harnessPath, runJson, cleanup } = createRunnerProcessHarness("accepted");
 
   fs.writeFileSync(
     harnessPath,
@@ -759,25 +747,17 @@ test("runAgent does not treat an accepted streaming prompt as handled", () => {
   );
 
   try {
-    const result = JSON.parse(
-      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
-        encoding: "utf8",
-        timeout: 10_000,
-      }),
-    );
+    const result = runJson();
     assert.equal(result.exitCode, 0);
     assert.equal(result.handledWithoutAgent, undefined);
     assert.equal(result.messages.at(-1).content[0].text, "completed");
   } finally {
     cleanup();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
 test("runAgent terminates a silent child after its inactivity timeout", () => {
-  const { moduleUrl, cleanup } = createTestableRunnerModule();
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-inactivity-"));
-  const harnessPath = path.join(tmpDir, "inactivity-harness.mjs");
+  const { moduleUrl, harnessPath, runJson, cleanup } = createRunnerProcessHarness("inactivity");
 
   fs.writeFileSync(
     harnessPath,
@@ -804,23 +784,17 @@ test("runAgent terminates a silent child after its inactivity timeout", () => {
   );
 
   try {
-    const result = JSON.parse(execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
-      encoding: "utf8",
-      timeout: 10_000,
-    }));
+    const result = runJson();
     assert.equal(result.exitCode, 1);
     assert.equal(result.processError, true);
     assert.match(result.errorMessage, /child RPC stdout activity.*inactivity timeout/);
   } finally {
     cleanup();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
 test("runAgent stops inactivity timing after a named session settles", () => {
-  const { moduleUrl, cleanup } = createTestableRunnerModule();
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-settled-inactivity-"));
-  const harnessPath = path.join(tmpDir, "settled-inactivity-harness.mjs");
+  const { moduleUrl, harnessPath, runJson, cleanup } = createRunnerProcessHarness("settled-inactivity");
 
   fs.writeFileSync(
     harnessPath,
@@ -864,28 +838,23 @@ test("runAgent stops inactivity timing after a named session settles", () => {
   );
 
   try {
-    const result = JSON.parse(
-      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
-        encoding: "utf8",
-        timeout: 10_000,
-      }),
-    );
+    const result = runJson();
     assert.equal(result.exitCode, 0);
     assert.equal(result.processError, undefined);
     assert.equal(result.sawAgentSettled, true);
     assert.equal(result.messages.at(-1).content[0].text, "completed before session flush");
   } finally {
     cleanup();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
 test("runAgent preserves the watchdog reason when late failures arrive", {
   skip: process.platform === "win32",
 }, () => {
-  const { moduleUrl, cleanup } = createTestableRunnerModule({ maxJsonLineBytes: 1024 });
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-late-rpc-"));
-  const harnessPath = path.join(tmpDir, "late-rpc-harness.mjs");
+  const { moduleUrl, harnessPath, runJson, cleanup } = createRunnerProcessHarness(
+    "late-rpc",
+    { maxJsonLineBytes: 1024 },
+  );
 
   fs.writeFileSync(
     harnessPath,
@@ -924,12 +893,7 @@ test("runAgent preserves the watchdog reason when late failures arrive", {
   );
 
   try {
-    const result = JSON.parse(
-      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
-        encoding: "utf8",
-        timeout: 10_000,
-      }),
-    );
+    const result = runJson();
     assert.equal(result.processError, true);
     assert.equal(result.stopReason, "error");
     assert.match(result.errorMessage, /child RPC stdout activity.*inactivity timeout/);
@@ -937,14 +901,11 @@ test("runAgent preserves the watchdog reason when late failures arrive", {
     assert.equal(result.messages.at(-1).content[0].text, "partial output after timeout");
   } finally {
     cleanup();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
 test("runAgent resets inactivity only for child stdout activity", () => {
-  const { moduleUrl, cleanup } = createTestableRunnerModule();
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-activity-"));
-  const harnessPath = path.join(tmpDir, "activity-harness.mjs");
+  const { moduleUrl, harnessPath, runJson, cleanup } = createRunnerProcessHarness("activity");
 
   fs.writeFileSync(
     harnessPath,
@@ -989,26 +950,18 @@ test("runAgent resets inactivity only for child stdout activity", () => {
   );
 
   try {
-    const [stdoutResult, stderrResult] = JSON.parse(
-      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
-        encoding: "utf8",
-        timeout: 10_000,
-      }),
-    );
+    const [stdoutResult, stderrResult] = runJson();
     assert.equal(stdoutResult.exitCode, 0);
     assert.equal(stdoutResult.messages.at(-1).content[0].text, "done");
     assert.equal(stderrResult.exitCode, 1);
     assert.match(stderrResult.errorMessage, /inactivity timeout/);
   } finally {
     cleanup();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
 test("runAgent enforces an explicitly configured wall-clock timeout", () => {
-  const { moduleUrl, cleanup } = createTestableRunnerModule();
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-timeout-"));
-  const harnessPath = path.join(tmpDir, "timeout-harness.mjs");
+  const { moduleUrl, harnessPath, runJson, cleanup } = createRunnerProcessHarness("timeout");
 
   fs.writeFileSync(
     harnessPath,
@@ -1035,12 +988,7 @@ test("runAgent enforces an explicitly configured wall-clock timeout", () => {
   );
 
   try {
-    const result = JSON.parse(
-      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
-        encoding: "utf8",
-        timeout: 10_000,
-      }),
-    );
+    const result = runJson();
 
     assert.equal(result.exitCode, 1);
     assert.equal(result.processError, true);
@@ -1048,7 +996,6 @@ test("runAgent enforces an explicitly configured wall-clock timeout", () => {
     assert.match(result.errorMessage, /configured 0\.1s run timeout/);
   } finally {
     cleanup();
-    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
 
@@ -1056,9 +1003,8 @@ test(
   "runAgent inactivity timeout terminates Unix descendant processes",
   { skip: process.platform === "win32" },
   () => {
-    const { moduleUrl, cleanup } = createTestableRunnerModule();
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-tree-"));
-    const harnessPath = path.join(tmpDir, "tree-harness.mjs");
+    const { moduleUrl, tmpDir, harnessPath, runJson, cleanup } =
+      createRunnerProcessHarness("tree");
     const readyPath = path.join(tmpDir, "descendant-ready");
     const markerPath = path.join(tmpDir, "descendant-marker");
 
@@ -1095,18 +1041,12 @@ test(
     );
 
     try {
-      const output = JSON.parse(
-        execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
-          encoding: "utf8",
-          timeout: 10_000,
-        }),
-      );
+      const output = runJson();
       assert.equal(output.result.processError, true);
       assert.equal(output.descendantStarted, true);
       assert.equal(output.markerExists, false);
     } finally {
       cleanup();
-      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   },
 );
