@@ -95,6 +95,25 @@ The starter is read-only (`read`, `grep`, `find`, `ls`) and is meant for focused
 
 Small, focused definitions work best. The `description` helps the main agent choose a subagent; the Markdown body is the subagent's extra system prompt.
 
+##### oracle (packaged example)
+
+The repository and npm package include [`agents/oracle.md`](agents/oracle.md) as a full-featured reference definition. It demonstrates:
+
+- a provider-prefixed default `model` and elevated `thinking` level;
+- an explicit tool allowlist;
+- a 10-minute inactivity watchdog default;
+- advisory `sessionPreference` and `sessionHint` guidance for choosing between independent and continued discussions.
+
+The package does **not** install or activate this agent automatically. Agent definitions can select models and tools, so copy examples into your user or project agents directory only after reviewing them. Adjust or remove the example's `model` if it is not available in your Pi configuration.
+
+From a repository checkout, install the example as a user agent with:
+
+```bash
+agents_dir="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/agents"
+mkdir -p "$agents_dir"
+cp agents/oracle.md "$agents_dir/oracle.md"
+```
+
 ##### explore
 
 A good default for fast codebase reconnaissance. It prefers named sessions because exploration often has follow-up questions.
