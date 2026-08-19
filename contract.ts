@@ -41,8 +41,8 @@ export const CALL_FIELDS: CallFieldContract[] = [
   {
     name: "model",
     required: false,
-    schemaDescription: "Model to use for this call. Overrides the agent file's default model.",
-    promptDescription: "model to use for this call. Overrides the agent file's default model. If omitted, the agent's default model is used when configured; otherwise Pi uses the inherited/default model",
+    schemaDescription: "Model to use for this call. Overrides the agent file's default model; otherwise the parent session's current model is inherited.",
+    promptDescription: "model to use for this call. Overrides the agent file's default model. If omitted, the agent's default model is used when configured; otherwise Pi uses the parent session's current effective model",
   },
   {
     name: "cwd",

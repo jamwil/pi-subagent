@@ -1102,7 +1102,7 @@ test(
 test("buildPiArgs plans ephemeral and persistent session flags", async () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   try {
-    const { buildPiArgs } = await import(moduleUrl);
+    const { buildModelArgs, buildPiArgs } = await import(moduleUrl);
     const agent = {
       name: "review",
       description: "reviewer",
@@ -1168,14 +1168,77 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
       ["--mode", "rpc", "--no-session", "--no-tools"],
     );
 
+    const parentModel = {
+      provider: "openrouter",
+      id: "anthropic/claude-sonnet-4",
+    };
+
     assert.deepEqual(
-      buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined),
+      buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined, undefined, parentModel),
+      [
+        "--mode",
+        "rpc",
+        "--no-session",
+        "--provider",
+        "openrouter",
+        "--model",
+        "anthropic/claude-sonnet-4",
+      ],
+    );
+
+    assert.deepEqual(
+      buildPiArgs(
+        agent,
+        null,
+        "hello",
+        "empty",
+        null,
+        { ...session, created: false, initialContextApplied: null },
+        undefined,
+        undefined,
+        parentModel,
+      ),
+      [
+        "--mode",
+        "rpc",
+        "--session-id",
+        "subagent.abc123",
+        "--provider",
+        "openrouter",
+        "--model",
+        "anthropic/claude-sonnet-4",
+      ],
+    );
+
+    assert.deepEqual(
+      buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, undefined, parentModel),
       ["--mode", "rpc", "--no-session", "--model", "agent-model"],
     );
 
     assert.deepEqual(
-      buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, "call-model"),
+      buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, "call-model", parentModel),
       ["--mode", "rpc", "--no-session", "--model", "call-model"],
+    );
+
+    assert.deepEqual(
+      buildModelArgs(undefined, undefined, parentModel, "stale-provider", "stale-model"),
+      ["--provider", "openrouter", "--model", "anthropic/claude-sonnet-4"],
+    );
+    assert.deepEqual(
+      buildModelArgs("call-model", "agent-model", parentModel, "startup-provider", "startup-model"),
+      ["--provider", "startup-provider", "--model", "call-model"],
+    );
+    assert.deepEqual(
+      buildModelArgs(undefined, "agent-model", parentModel, "startup-provider", "startup-model"),
+      ["--provider", "startup-provider", "--model", "agent-model"],
+    );
+    assert.deepEqual(
+      buildModelArgs(undefined, undefined, undefined, "startup-provider", "startup-model"),
+      ["--provider", "startup-provider", "--model", "startup-model"],
+    );
+    assert.deepEqual(
+      buildModelArgs(undefined, undefined, undefined, undefined, undefined),
+      [],
     );
   } finally {
     cleanup();

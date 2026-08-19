@@ -37,8 +37,6 @@ test("forwards safe parent CLI flags and captures fallback model settings", () =
 
   assert.deepEqual(parsed.extensionArgs, []);
   assert.deepEqual(parsed.alwaysProxy, [
-    "--provider",
-    "openrouter",
     "--api-key",
     "secret",
     "--theme",
@@ -48,6 +46,7 @@ test("forwards safe parent CLI flags and captures fallback model settings", () =
     "--custom-flag",
     "value",
   ]);
+  assert.equal(parsed.fallbackProvider, "openrouter");
   assert.equal(parsed.fallbackModel, "anthropic/claude-3-7-sonnet");
   assert.equal(parsed.fallbackThinking, "high");
   assert.equal(parsed.fallbackTools, "read,bash");
@@ -218,7 +217,21 @@ test("does not inherit parent session identity flags", () => {
     "openrouter",
   ]);
 
-  assert.deepEqual(parsed.alwaysProxy, ["--provider", "openrouter"]);
+  assert.deepEqual(parsed.alwaysProxy, []);
+  assert.equal(parsed.fallbackProvider, "openrouter");
+});
+
+test("captures the last inherited provider from separate and inline flags", () => {
+  const parsed = parseInheritedCliArgs([
+    "/usr/bin/node",
+    "pi",
+    "--provider",
+    "anthropic",
+    "--provider=openrouter",
+  ]);
+
+  assert.equal(parsed.fallbackProvider, "openrouter");
+  assert.deepEqual(parsed.alwaysProxy, []);
 });
 
 test("consumes dash-prefixed values for known value flags", () => {

@@ -34,7 +34,7 @@ import { formatCallsSummary, writeOutputArtifact } from "./output.js";
 import { renderCall, renderResult } from "./render.js";
 import { parseInheritedCliArgs } from "./runner-cli.js";
 import { ensureDefaultSessionDir, getDefaultSessionDirPath } from "./session-paths.js";
-import { mapConcurrent, runAgent } from "./runner.js";
+import { mapConcurrent, runAgent, type ParentModel } from "./runner.js";
 import { acquireSessionLocks, releaseSessionLocks, type SessionLockTarget } from "./session-lock.js";
 import {
   type InitialContext,
@@ -810,6 +810,9 @@ export default function (pi: ExtensionAPI) {
       parameters: SubagentParams,
 
       async execute(_toolCallId, params, signal, onUpdate, ctx) {
+        const parentModel: ParentModel | undefined = ctx.model
+          ? { provider: ctx.model.provider, id: ctx.model.id }
+          : undefined;
         const starterDiscovery = discoverAgentsWithStarter(
           ctx.cwd,
           shouldIncludeProjectAgents(ctx.cwd, ctx.isProjectTrusted()),
@@ -937,6 +940,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
             calls,
             parentSessionSnapshotJsonl,
             persistentSessionDir,
+            parentModel,
             agents,
             ctx.cwd,
             signal,
@@ -963,6 +967,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
     calls: NormalizedCall[],
     parentSessionSnapshotJsonl: string | undefined,
     persistentSessionDir: string | undefined,
+    parentModel: ParentModel | undefined,
     agents: AgentConfig[],
     defaultCwd: string,
     signal: AbortSignal | undefined,
@@ -1013,6 +1018,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
               agentName: call.agent,
               prompt: call.prompt,
               callModel: call.model,
+              parentModel,
               callCwd: call.effectiveCwd,
               initialContext: call.initialContext,
               parentSessionSnapshotJsonl,

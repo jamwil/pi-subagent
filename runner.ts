@@ -157,6 +157,49 @@ export function rewriteSessionHeaderCwd(
 
 const inheritedCliArgs = parseInheritedCliArgs(process.argv);
 
+export interface ParentModel {
+  provider: string;
+  id: string;
+}
+
+function formatParentModel(parentModel: ParentModel | undefined): string | undefined {
+  return parentModel ? `${parentModel.provider}/${parentModel.id}` : undefined;
+}
+
+export function buildModelArgs(
+  callModel: string | undefined,
+  agentModel: string | undefined,
+  parentModel: ParentModel | undefined,
+  fallbackProvider: string | undefined,
+  fallbackModel: string | undefined,
+): string[] {
+  const configuredModel = callModel ?? agentModel;
+  if (configuredModel) {
+    return [
+      ...(fallbackProvider ? ["--provider", fallbackProvider] : []),
+      "--model",
+      configuredModel,
+    ];
+  }
+
+  if (parentModel) {
+    return ["--provider", parentModel.provider, "--model", parentModel.id];
+  }
+
+  return [
+    ...(fallbackProvider ? ["--provider", fallbackProvider] : []),
+    ...(fallbackModel ? ["--model", fallbackModel] : []),
+  ];
+}
+
+function resolveRequestedModel(
+  callModel: string | undefined,
+  agentModel: string | undefined,
+  parentModel: ParentModel | undefined,
+): string | undefined {
+  return callModel ?? agentModel ?? formatParentModel(parentModel) ?? inheritedCliArgs.fallbackModel;
+}
+
 export function buildPiArgs(
   agent: AgentConfig,
   systemPromptPath: string | null,
@@ -166,6 +209,7 @@ export function buildPiArgs(
   session: SubagentSessionDetails | undefined,
   persistentSessionDir: string | undefined,
   callModel?: string,
+  parentModel?: ParentModel,
   inheritProjectApproval = true,
 ): string[] {
   const projectTrustArgs = getInheritedProjectTrustArgs(
@@ -196,8 +240,13 @@ export function buildPiArgs(
     args.push("--no-session");
   }
 
-  const model = callModel ?? agent.model ?? inheritedCliArgs.fallbackModel;
-  if (model) args.push("--model", model);
+  args.push(...buildModelArgs(
+    callModel,
+    agent.model,
+    parentModel,
+    inheritedCliArgs.fallbackProvider,
+    inheritedCliArgs.fallbackModel,
+  ));
 
   const thinking = agent.thinking ?? inheritedCliArgs.fallbackThinking;
   if (thinking) args.push("--thinking", thinking);
@@ -235,6 +284,8 @@ export interface RunAgentOptions {
   prompt: string;
   /** Per-call model override. */
   callModel?: string;
+  /** Parent session model captured when the tool invocation started. */
+  parentModel?: ParentModel;
   /** Effective working directory for this process. */
   callCwd?: string;
   /** Initial context for newly-created child conversations. */
@@ -290,6 +341,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     agentName,
     prompt,
     callModel,
+    parentModel,
     callCwd,
     initialContext,
     parentSessionSnapshotJsonl,
@@ -340,7 +392,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       messages: [],
       stderr: message,
       usage: emptyUsage(),
-      model: callModel ?? agent.model,
+      model: resolveRequestedModel(callModel, agent.model, parentModel),
       stopReason: "error",
       errorMessage: message,
     };
@@ -362,7 +414,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
     messages: [],
     stderr: "",
     usage: emptyUsage(),
-    model: callModel ?? agent.model,
+    model: resolveRequestedModel(callModel, agent.model, parentModel),
   };
 
   if (signal?.aborted) {
@@ -415,6 +467,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       session,
       persistentSessionDir,
       callModel,
+      parentModel,
       isSameWorkingDirectory(callCwd ?? cwd, cwd),
     );
 
