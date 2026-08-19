@@ -275,10 +275,11 @@ export function isSameWorkingDirectory(left: string, right: string): boolean {
 }
 
 export function resolveInactivityTimeoutMs(
-  callTimeoutMs: number | undefined,
+  callInactivityTimeoutMs: number | undefined,
   agentTimeoutSeconds: number | undefined,
 ): number | undefined {
-  return callTimeoutMs ?? (agentTimeoutSeconds === undefined ? undefined : agentTimeoutSeconds * 1000);
+  return callInactivityTimeoutMs ??
+    (agentTimeoutSeconds === undefined ? undefined : agentTimeoutSeconds * 1000);
 }
 
 export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
