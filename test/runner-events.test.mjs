@@ -138,6 +138,24 @@ test("records successful RPC prompt acceptance", () => {
   assert.equal(result.rpcPromptAccepted, true);
 });
 
+test("unsuccessful RPC responses preserve established process errors and settle", () => {
+  const freshResult = makeResult();
+  processPiEvent({ type: "response", success: false, error: "RPC failed" }, freshResult);
+  assert.equal(freshResult.processError, true);
+  assert.equal(freshResult.stopReason, "error");
+  assert.equal(freshResult.errorMessage, "RPC failed");
+  assert.equal(freshResult.sawAgentSettled, true);
+
+  const failedResult = makeResult();
+  failedResult.processError = true;
+  failedResult.stopReason = "error";
+  failedResult.errorMessage = "Subagent exceeded its inactivity timeout.";
+  processPiEvent({ type: "response", success: false, error: "Late RPC error" }, failedResult);
+  assert.equal(failedResult.stopReason, "error");
+  assert.equal(failedResult.errorMessage, "Subagent exceeded its inactivity timeout.");
+  assert.equal(failedResult.sawAgentSettled, true);
+});
+
 test("records agent settlement separately from low-level agent_end", () => {
   const result = makeResult();
   processPiEvent({ type: "agent_end", messages: [] }, result);

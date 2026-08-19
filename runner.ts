@@ -576,7 +576,13 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       };
 
       const resetInactivityTimeout = () => {
-        if (inactivityTimeoutMs === undefined || didClose || settled || terminationStarted) return;
+        if (
+          inactivityTimeoutMs === undefined ||
+          result.sawAgentSettled ||
+          didClose ||
+          settled ||
+          terminationStarted
+        ) return;
         clearInactivityTimeoutTimer();
         inactivityTimeoutTimer = setTimeout(() => {
           if (didClose || settled || terminationStarted) return;
@@ -674,6 +680,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
 
       const maybeFinishFromSettlement = () => {
         if (!result.sawAgentSettled || didClose || settled) return;
+        clearInactivityTimeoutTimer();
         if (!proc.stdin.destroyed) proc.stdin.end();
         if (session) {
           // Named sessions persist child history. Let Pi exit naturally so its

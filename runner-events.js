@@ -222,10 +222,12 @@ export function processPiEvent(event, result) {
       ) {
         result.rpcPromptIdle = true;
       } else if (event.success === false) {
-        const message = typeof event.error === "string" ? event.error : "Subagent RPC prompt failed.";
-        result.processError = true;
-        result.stopReason = "error";
-        result.errorMessage = message;
+        if (!result.processError) {
+          const message = typeof event.error === "string" ? event.error : "Subagent RPC prompt failed.";
+          result.processError = true;
+          result.stopReason = "error";
+          result.errorMessage = message;
+        }
         result.sawAgentSettled = true;
       }
       return false;

@@ -811,6 +811,69 @@ test("runAgent terminates a silent child after its inactivity timeout", () => {
   }
 });
 
+test("runAgent stops inactivity timing after a named session settles", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-settled-inactivity-"));
+  const harnessPath = path.join(tmpDir, "settled-inactivity-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      const message = {
+        role: "assistant",
+        content: [{ type: "text", text: "completed before session flush" }],
+        stopReason: "stop",
+        timestamp: 1,
+      };
+      process.stdout.write(JSON.stringify({ type: "message_end", message }) + "\\n");
+      process.stdout.write(JSON.stringify({ type: "agent_end", messages: [message] }) + "\\n");
+      process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+      setTimeout(() => {}, 900);
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const result = await runAgent({
+        cwd: process.cwd(),
+        agents: [{ name: "settled", description: "settled", source: "user", systemPrompt: "" }],
+        callIndex: 0,
+        agentName: "settled",
+        prompt: "hello",
+        initialContext: "empty",
+        session: {
+          handle: "settled-session",
+          id: "subagent.settled",
+          name: "subagent: settled · settled-session",
+          cwd: process.cwd(),
+          created: false,
+          initialContextApplied: null,
+        },
+        parentDepth: 0,
+        parentAgentStack: [],
+        maxDepth: 3,
+        preventCycles: true,
+        inactivityTimeoutMs: 500,
+        makeDetails: (results) => ({ kind: "pi-subagent", projectAgentsDir: null, results }),
+      });
+      process.stdout.write(JSON.stringify(result));
+    }`,
+  );
+
+  try {
+    const result = JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    );
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.processError, undefined);
+    assert.equal(result.sawAgentSettled, true);
+    assert.equal(result.messages.at(-1).content[0].text, "completed before session flush");
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("runAgent preserves the watchdog reason when late RPC metadata arrives", {
   skip: process.platform === "win32",
 }, () => {
