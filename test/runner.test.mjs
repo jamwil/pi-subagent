@@ -811,6 +811,64 @@ test("runAgent terminates a silent child after its inactivity timeout", () => {
   }
 });
 
+test("runAgent preserves the watchdog reason when late RPC metadata arrives", () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-late-rpc-"));
+  const harnessPath = path.join(tmpDir, "late-rpc-harness.mjs");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      process.on("SIGTERM", () => {
+        const message = {
+          role: "assistant",
+          content: [{ type: "text", text: "partial output after timeout" }],
+          stopReason: "error",
+          errorMessage: "late provider error",
+          timestamp: 1,
+        };
+        process.stdout.write(JSON.stringify({ type: "message_end", message }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "agent_end", messages: [message] }) + "\\n");
+      });
+      setInterval(() => {}, 1000);
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const result = await runAgent({
+        cwd: process.cwd(),
+        agents: [{ name: "late", description: "late", source: "user", systemPrompt: "" }],
+        callIndex: 0,
+        agentName: "late",
+        prompt: "hello",
+        initialContext: "empty",
+        parentDepth: 0,
+        parentAgentStack: [],
+        maxDepth: 3,
+        preventCycles: true,
+        inactivityTimeoutMs: 500,
+        makeDetails: (results) => ({ kind: "pi-subagent", projectAgentsDir: null, results }),
+      });
+      process.stdout.write(JSON.stringify(result));
+    }`,
+  );
+
+  try {
+    const result = JSON.parse(
+      execFileSync(process.execPath, ["--experimental-strip-types", harnessPath], {
+        encoding: "utf8",
+        timeout: 10_000,
+      }),
+    );
+    assert.equal(result.processError, true);
+    assert.equal(result.stopReason, "error");
+    assert.match(result.errorMessage, /child RPC stdout activity.*inactivity timeout/);
+    assert.doesNotMatch(result.errorMessage, /late provider error/);
+    assert.equal(result.messages.at(-1).content[0].text, "partial output after timeout");
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 test("runAgent resets inactivity only for child stdout activity", () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-activity-"));

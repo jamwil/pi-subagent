@@ -361,7 +361,7 @@ When multiple calls need `initialContext: "parent"`, they all receive the same p
 
 - `inactivityTimeout` is the normal stuck-run guard. Its countdown starts with the child run and resets only when bytes arrive on the child's RPC stdout. Stderr output and parent synthetic progress updates do not reset it.
 - `timeout` is an exceptional absolute wall-clock deadline. Activity never extends it. Omit it for ordinary stuck-run protection.
-- Either expiry preserves captured partial output, reports a distinct error, and terminates the child process tree with SIGTERM followed by SIGKILL when needed.
+- Either expiry preserves captured partial output and reports a distinct error. On Unix, the child process group receives SIGTERM followed by SIGKILL when needed; on Windows, the existing `taskkill /T /F` process-tree termination path is used.
 
 A per-call `inactivityTimeout` overrides the selected agent's frontmatter value. If neither is configured, there is no inactivity watchdog.
 

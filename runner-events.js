@@ -57,6 +57,7 @@ function rememberSignature(seen, signature) {
 function updateAssistantMetadata(result, message) {
   if (!message || message.role !== "assistant") return;
   if (!result.model && message.model) result.model = message.model;
+  if (result.processError) return;
   if (message.stopReason) result.stopReason = message.stopReason;
   if (message.errorMessage) result.errorMessage = message.errorMessage;
 }
