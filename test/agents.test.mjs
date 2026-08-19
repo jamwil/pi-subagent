@@ -39,7 +39,9 @@ export function parseFrontmatter(content) {
             ? false
             : value === "[]"
               ? []
-              : value;
+              : /^\\d+$/.test(value)
+                ? Number(value)
+                : value;
       }
       return { frontmatter, body: match[2] ?? "" };
     }
@@ -240,6 +242,34 @@ test("parses optional session guidance from agent frontmatter", () => {
       byName.get("hint-only")?.sessionHint,
       "Use a named session only after the first broad pass.",
     );
+  } finally {
+    cleanup();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("parses positive inactivityTimeout defaults and ignores invalid values", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-agents-fixture-"));
+  const configDir = path.join(tmpDir, "override-config");
+  const agentsDir = path.join(configDir, "agents");
+  const { moduleUrl, cleanup } = createTestableAgentsModule();
+
+  fs.mkdirSync(agentsDir, { recursive: true });
+  for (const [name, value] of [["valid", "17"], ["zero", "0"], ["text", "soon"]]) {
+    fs.writeFileSync(
+      path.join(agentsDir, `${name}.md`),
+      `---\nname: ${name}\ndescription: ${name}\ninactivityTimeout: ${value}\n---\n\nAgent.\n`,
+    );
+  }
+
+  try {
+    const discovery = runDiscoverAgents(moduleUrl, tmpDir, "user", {
+      PI_CODING_AGENT_DIR: configDir,
+    });
+    const byName = new Map(discovery.agents.map((agent) => [agent.name, agent]));
+    assert.equal(byName.get("valid")?.inactivityTimeout, 17);
+    assert.equal(byName.get("zero")?.inactivityTimeout, undefined);
+    assert.equal(byName.get("text")?.inactivityTimeout, undefined);
   } finally {
     cleanup();
     fs.rmSync(tmpDir, { recursive: true, force: true });

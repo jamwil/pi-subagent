@@ -98,6 +98,13 @@ const CallItem = Type.Object({
       maxLength: SESSION_HANDLE_MAX_LENGTH,
     }),
   ),
+  inactivityTimeout: Type.Optional(
+    Type.Integer({
+      description: getCallFieldSchemaDescription("inactivityTimeout"),
+      minimum: 1,
+      maximum: MAX_TIMEOUT_SECONDS,
+    }),
+  ),
   timeout: Type.Optional(
     Type.Integer({
       description: getCallFieldSchemaDescription("timeout"),
@@ -141,6 +148,7 @@ interface NormalizedCall {
   initialContext: InitialContext;
   sessionHandle?: string;
   session?: SubagentSessionDetails;
+  inactivityTimeoutMs?: number;
   timeoutMs?: number;
 }
 
@@ -164,6 +172,17 @@ function parseInitialContext(raw: unknown): InitialContext | null {
   const normalized = raw.trim();
   if (normalized === "empty" || normalized === "parent") return normalized;
   return null;
+}
+
+function parseOptionalTimeoutMs(raw: unknown): number | null | undefined {
+  if (raw === undefined) return undefined;
+  if (
+    typeof raw !== "number" ||
+    !Number.isInteger(raw) ||
+    raw < 1 ||
+    raw > MAX_TIMEOUT_SECONDS
+  ) return null;
+  return raw * 1000;
 }
 
 function buildParentSessionSnapshotJsonl(
@@ -424,19 +443,18 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
       return { error: `calls[${index}].initialContext must be "empty" or "parent".` };
     }
 
-    let timeoutMs: number | undefined;
-    if (call.timeout !== undefined) {
-      if (
-        typeof call.timeout !== "number" ||
-        !Number.isInteger(call.timeout) ||
-        call.timeout < 1 ||
-        call.timeout > MAX_TIMEOUT_SECONDS
-      ) {
-        return {
-          error: `calls[${index}].timeout must be an integer between 1 and ${MAX_TIMEOUT_SECONDS} seconds when provided.`,
-        };
-      }
-      timeoutMs = call.timeout * 1000;
+    const inactivityTimeoutMs = parseOptionalTimeoutMs(call.inactivityTimeout);
+    if (inactivityTimeoutMs === null) {
+      return {
+        error: `calls[${index}].inactivityTimeout must be an integer between 1 and ${MAX_TIMEOUT_SECONDS} seconds when provided.`,
+      };
+    }
+
+    const timeoutMs = parseOptionalTimeoutMs(call.timeout);
+    if (timeoutMs === null) {
+      return {
+        error: `calls[${index}].timeout must be an integer between 1 and ${MAX_TIMEOUT_SECONDS} seconds when provided.`,
+      };
     }
 
     let effectiveCwd: string;
@@ -485,6 +503,7 @@ function normalizeCalls(rawCalls: unknown, defaultCwd: string): NormalizedCallsR
       effectiveCwd,
       initialContext,
       sessionHandle,
+      inactivityTimeoutMs,
       timeoutMs,
     });
   }
@@ -999,6 +1018,7 @@ This guard prevents self-recursion and cyclic handoffs (for example A -> B -> A)
               parentAgentStack: ancestorAgentStack,
               maxDepth,
               preventCycles,
+              inactivityTimeoutMs: call.inactivityTimeoutMs,
               timeoutMs: call.timeoutMs,
               signal,
               onUpdate: (partial) => {

@@ -25,6 +25,7 @@ export interface AgentConfig {
 	noTools?: boolean;
 	model?: string;
 	thinking?: string;
+	inactivityTimeout?: number;
 	sessionPreference?: SessionPreference;
 	sessionHint?: string;
 	systemPrompt: string;
@@ -45,6 +46,8 @@ export interface StarterAgentDiscoveryResult {
 
 export const STARTER_AGENT_NAME = "explore";
 export const STARTER_AGENT_FILE_NAME = "explore.md";
+
+const MAX_TIMER_SECONDS = Math.floor(2_147_483_647 / 1000);
 
 const STARTER_AGENT_MARKDOWN = `---
 name: explore
@@ -116,6 +119,20 @@ function parseNoTools(raw: unknown, filePath: string): boolean | undefined {
 	if (typeof raw === "boolean") return raw;
 	console.warn(
 		`[pi-subagent] Ignoring invalid noTools field in "${filePath}". Expected true or false.`,
+	);
+	return undefined;
+}
+
+function parsePositiveInteger(raw: unknown, field: string, filePath: string): number | undefined {
+	if (raw === undefined) return undefined;
+	if (
+		typeof raw === "number" &&
+		Number.isSafeInteger(raw) &&
+		raw > 0 &&
+		raw <= MAX_TIMER_SECONDS
+	) return raw;
+	console.warn(
+		`[pi-subagent] Ignoring invalid ${field} field in "${filePath}". Expected an integer between 1 and ${MAX_TIMER_SECONDS}.`,
 	);
 	return undefined;
 }
@@ -204,6 +221,7 @@ function parseAgentFile(filePath: string, source: "user" | "project"): AgentConf
 		noTools,
 		model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
 		thinking: typeof frontmatter.thinking === "string" ? frontmatter.thinking : undefined,
+		inactivityTimeout: parsePositiveInteger(frontmatter.inactivityTimeout, "inactivityTimeout", filePath),
 		sessionPreference: parseSessionPreference(frontmatter.sessionPreference, filePath),
 		sessionHint: parseSessionHint(frontmatter.sessionHint, filePath),
 		systemPrompt: body,

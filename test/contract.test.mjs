@@ -14,6 +14,7 @@ const agents = [
     source: "user",
     filePath: "/tmp/review.md",
     systemPrompt: "You review code.",
+    inactivityTimeout: 45,
     sessionPreference: "ephemeral",
   },
   {
@@ -51,6 +52,17 @@ test("generated contract has no project-agent confirmation option", () => {
 
   assert.doesNotMatch(combined, /confirmProjectAgents/);
   assert.doesNotMatch(combined, /project-local agent confirmation/i);
+});
+
+test("delegation contract distinguishes liveness controls and discourages parent cloning", () => {
+  const combined = `${makePrompt()}\n${formatSubagentToolDescription()}`;
+
+  assert.match(combined, /Inactivity timeout default: 45s/);
+  assert.match(combined, /ordinary stuck-run protection/);
+  assert.match(combined, /absolute wall-clock deadline/);
+  assert.match(combined, /expensive and carries the parent conversation's authority/);
+  assert.match(formatSubagentToolDescription(), /initialContext: "empty"/);
+  assert.doesNotMatch(formatSubagentToolDescription(), /initialContext: "parent"/);
 });
 
 test("available subagent prompt labels agent source and guard state", () => {

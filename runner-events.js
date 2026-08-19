@@ -57,6 +57,7 @@ function rememberSignature(seen, signature) {
 function updateAssistantMetadata(result, message) {
   if (!message || message.role !== "assistant") return;
   if (!result.model && message.model) result.model = message.model;
+  if (result.processError) return;
   if (message.stopReason) result.stopReason = message.stopReason;
   if (message.errorMessage) result.errorMessage = message.errorMessage;
 }
@@ -221,10 +222,12 @@ export function processPiEvent(event, result) {
       ) {
         result.rpcPromptIdle = true;
       } else if (event.success === false) {
-        const message = typeof event.error === "string" ? event.error : "Subagent RPC prompt failed.";
-        result.processError = true;
-        result.stopReason = "error";
-        result.errorMessage = message;
+        if (!result.processError) {
+          const message = typeof event.error === "string" ? event.error : "Subagent RPC prompt failed.";
+          result.processError = true;
+          result.stopReason = "error";
+          result.errorMessage = message;
+        }
         result.sawAgentSettled = true;
       }
       return false;
