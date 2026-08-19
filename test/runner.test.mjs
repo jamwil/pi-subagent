@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { resolveCliModel } from "@earendil-works/pi-coding-agent";
 import { isResultError, isResultSuccess, normalizeCompletedResult } from "../types.ts";
 
 function createTestableRunnerModule(options = {}) {
@@ -479,6 +480,56 @@ test("runAgent converts synchronous spawn failures into structured results", asy
     assert.equal(result.processError, true);
     assert.equal(result.stopReason, "error");
     assert.match(result.errorMessage, /null bytes|invalid/i);
+  } finally {
+    cleanup();
+  }
+});
+
+test("runAgent inherits the exact parent model and records child model metadata", () => {
+  const { moduleUrl, harnessPath, runJson, cleanup } = createRunnerProcessHarness("parent-model");
+
+  fs.writeFileSync(
+    harnessPath,
+    `if (process.argv.includes("--mode")) {
+      const final = {
+        role: "assistant",
+        content: [{ type: "text", text: JSON.stringify(process.argv) }],
+        model: "child-resolved-model",
+        stopReason: "stop",
+        timestamp: 1,
+      };
+      process.stdout.write(JSON.stringify({ type: "message_end", message: final }) + "\\n");
+      process.stdout.write(JSON.stringify({ type: "agent_end", messages: [final] }) + "\\n");
+      process.stdout.write(JSON.stringify({ type: "agent_settled" }) + "\\n");
+      setInterval(() => {}, 1000);
+    } else {
+      const { runAgent } = await import(${JSON.stringify(moduleUrl)});
+      const result = await runAgent({
+        cwd: process.cwd(),
+        agents: [{ name: "review", description: "review", source: "user", systemPrompt: "" }],
+        callIndex: 0,
+        agentName: "review",
+        prompt: "hello",
+        parentModel: { provider: "openrouter", id: "openrouter/free" },
+        initialContext: "empty",
+        parentDepth: 0,
+        parentAgentStack: [],
+        maxDepth: 3,
+        preventCycles: true,
+        makeDetails: (items) => ({ kind: "pi-subagent", projectAgentsDir: null, results: items }),
+      });
+      process.stdout.write(JSON.stringify(result));
+    }`,
+  );
+
+  try {
+    const result = runJson();
+    assert.equal(result.model, "child-resolved-model");
+    const childArgv = JSON.parse(result.messages[0].content[0].text);
+    const modelIndex = childArgv.indexOf("--model");
+    assert.notEqual(modelIndex, -1);
+    assert.equal(childArgv[modelIndex + 1], "openrouter/openrouter/free");
+    assert.equal(childArgv.includes("--provider"), false);
   } finally {
     cleanup();
   }
@@ -1102,7 +1153,7 @@ test(
 test("buildPiArgs plans ephemeral and persistent session flags", async () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   try {
-    const { buildPiArgs } = await import(moduleUrl);
+    const { buildModelArgs, buildPiArgs } = await import(moduleUrl);
     const agent = {
       name: "review",
       description: "reviewer",
@@ -1168,14 +1219,101 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
       ["--mode", "rpc", "--no-session", "--no-tools"],
     );
 
+    const parentModel = {
+      provider: "openrouter",
+      id: "anthropic/claude-sonnet-4",
+    };
+
     assert.deepEqual(
-      buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined),
+      buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined, undefined, parentModel),
+      ["--mode", "rpc", "--no-session", "--model", "openrouter/anthropic/claude-sonnet-4"],
+    );
+
+    assert.deepEqual(
+      buildPiArgs(
+        agent,
+        null,
+        "hello",
+        "empty",
+        null,
+        { ...session, created: false, initialContextApplied: null },
+        undefined,
+        undefined,
+        parentModel,
+      ),
+      [
+        "--mode",
+        "rpc",
+        "--session-id",
+        "subagent.abc123",
+        "--model",
+        "openrouter/anthropic/claude-sonnet-4",
+      ],
+    );
+
+    assert.deepEqual(
+      buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, undefined, parentModel),
       ["--mode", "rpc", "--no-session", "--model", "agent-model"],
     );
 
     assert.deepEqual(
-      buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, "call-model"),
+      buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, "call-model", parentModel),
       ["--mode", "rpc", "--no-session", "--model", "call-model"],
+    );
+
+    assert.deepEqual(
+      buildModelArgs(undefined, undefined, parentModel, "stale-provider", "stale-model"),
+      ["--model", "openrouter/anthropic/claude-sonnet-4"],
+    );
+    assert.deepEqual(
+      buildModelArgs("call-model", "agent-model", parentModel, "startup-provider", "startup-model"),
+      ["--provider", "startup-provider", "--model", "call-model"],
+    );
+    assert.deepEqual(
+      buildModelArgs(undefined, "agent-model", parentModel, "startup-provider", "startup-model"),
+      ["--provider", "startup-provider", "--model", "agent-model"],
+    );
+    const providerPrefixedId = {
+      provider: "openrouter",
+      id: "openrouter/free",
+    };
+    const providerPrefixedArgs = buildModelArgs(
+      undefined,
+      undefined,
+      providerPrefixedId,
+      "stale-provider",
+      "stale-model",
+    );
+    assert.deepEqual(
+      providerPrefixedArgs,
+      ["--model", "openrouter/openrouter/free"],
+    );
+
+    const exactModel = {
+      provider: "openrouter",
+      id: "openrouter/free",
+      name: "OpenRouter Free",
+    };
+    const resolved = resolveCliModel({
+      cliModel: providerPrefixedArgs[1],
+      modelRegistry: {
+        getAll: () => [
+          exactModel,
+          { provider: "openrouter", id: "other/free", name: "Other Free" },
+        ],
+        hasConfiguredAuth: () => true,
+      },
+    });
+    assert.equal(resolved.error, undefined);
+    assert.equal(resolved.model, exactModel);
+
+    assert.deepEqual(
+      buildModelArgs(undefined, undefined, undefined, "startup-provider", "startup-model"),
+      ["--provider", "startup-provider", "--model", "startup-model"],
+    );
+    assert.deepEqual(
+      buildModelArgs(undefined, undefined, undefined, undefined, undefined),
+      [],
     );
   } finally {
     cleanup();

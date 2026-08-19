@@ -152,7 +152,7 @@ You review code changes. Focus on substantive issues, cite files and lines, and 
 | --- | --- | --- | --- |
 | `name` | Yes | — | Agent identifier used in tool calls. |
 | `description` | Yes | — | What the agent does; shown to the main agent. |
-| `model` | No | Parent/default Pi model | Sets the default model for this agent. A per-call `model` overrides it. Supports provider-prefixed values such as `anthropic/claude-3-5-sonnet`. |
+| `model` | No | Parent's current Pi model | Sets the default model for this agent. A per-call `model` overrides it. Supports provider-prefixed values such as `anthropic/claude-3-5-sonnet`. |
 | `thinking` | No | Parent/default Pi thinking level | Sets the thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). |
 | `inactivityTimeout` | No | No inactivity timeout | Positive integer seconds, up to 2,147,483, that a child may produce no RPC stdout activity before its process tree is terminated. A per-call value overrides this default. |
 | `tools` | No | Parent/default Pi tools | Comma-separated allowlist of tool names to enable for this agent. Omitted or empty values inherit the parent configuration. |
@@ -198,7 +198,7 @@ Each subagent runs in a separate `pi` process:
 - Uses Pi's headless RPC mode so prompts are transported verbatim and completion follows Pi's settlement events.
 - Interactive UI requests from inherited extensions are cancelled because subagent processes have no interactive user; non-interactive extension hooks continue normally.
 - Started with `PI_OFFLINE=1` to skip startup network operations and reduce latency.
-- Inherits relevant parent CLI configuration such as extensions, provider/theme/skill flags, model/thinking/tool defaults, and custom session storage when applicable. Temporary `--approve` trust is inherited only when the child uses the same working directory; `--no-approve` is always preserved. A per-call `model` overrides the agent file's default model.
+- Inherits relevant parent configuration such as extensions, theme/skill flags, thinking/tool defaults, and custom session storage when applicable. When neither the call nor agent file sets a model, the child receives the parent session's current effective provider/model at delegation time. Temporary `--approve` trust is inherited only when the child uses the same working directory; `--no-approve` is always preserved. A per-call `model` overrides the agent file's default model.
 
 The main agent receives a concise text summary for each subagent call. Tool calls, usage, generated session IDs, and creation metadata are available to the TUI and tool result details; the text summary includes only the logical `session` handle in the call header when one was provided.
 
@@ -223,7 +223,7 @@ A tool invocation accepts between 1 and 8 calls. Each call supports:
 | --- | --- | --- | --- |
 | `agent` | Yes | — | Exact name of an available subagent. |
 | `prompt` | Yes | — | Non-empty prompt sent verbatim to the subagent. |
-| `model` | No | Agent/default Pi model | Model to use for this call. Overrides the agent file's default model. |
+| `model` | No | Agent or current parent Pi model | Model to use for this call. Overrides the agent file's default model. |
 | `cwd` | No | Parent cwd | Working directory for this subagent process. |
 | `initialContext` | No | `"empty"` | `"empty"` starts without parent history. `"parent"` exceptionally clones the current parent snapshot; this is expensive and carries the parent conversation's authority. Prefer empty and pass relevant context deliberately. Existing named sessions ignore this field. |
 | `session` | No | — | Logical handle of at most 120 characters for a persistent child Pi session. Use this for multi-turn specialist work. Requires a persisted parent Pi session. |
@@ -257,7 +257,7 @@ A tool invocation accepts between 1 and 8 calls. Each call supports:
 }
 ```
 
-If omitted, the agent file's `model` is used when configured; otherwise the child uses the inherited/default Pi model.
+If omitted, the agent file's `model` is used when configured; otherwise the child uses the parent session's current effective provider/model at delegation time. This applies to continued named sessions too, so a parent model change affects their next call.
 
 #### Multiple parallel calls
 

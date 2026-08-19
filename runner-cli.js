@@ -46,11 +46,12 @@ export function getInheritedProjectTrustArgs(projectTrustOverride, inheritProjec
  *
  * - extensionArgs: forwarded with path resolution
  * - alwaysProxy: forwarded verbatim to every child
- * - fallbackModel/thinking/tools: used only when the agent file does not set them
+ * - fallbackProvider/model/thinking/tools: used only when more specific configuration is absent
  */
 export function parseInheritedCliArgs(argv) {
   const extensionArgs = [];
   const alwaysProxy = [];
+  let fallbackProvider;
   let fallbackModel;
   let fallbackThinking;
   let fallbackTools;
@@ -166,9 +167,15 @@ export function parseInheritedCliArgs(argv) {
       continue;
     }
 
+    if (flagName === "--provider") {
+      const [value, skip] = getValue({ allowDashValue: true });
+      if (value !== undefined) fallbackProvider = value;
+      i += skip;
+      continue;
+    }
+
     if (
       [
-        "--provider",
         "--api-key",
         "--system-prompt",
         "--models",
@@ -259,6 +266,7 @@ export function parseInheritedCliArgs(argv) {
   return {
     extensionArgs,
     alwaysProxy,
+    fallbackProvider,
     fallbackModel,
     fallbackThinking,
     fallbackTools,
