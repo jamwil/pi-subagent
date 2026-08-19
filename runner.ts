@@ -564,14 +564,21 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
         }, TERMINATION_SETTLE_TIMEOUT_MS);
       };
 
-      const failAndTerminate = (message: string) => {
-        result.processError = true;
-        result.stopReason = "error";
-        result.errorMessage = message;
-        if (!result.stderr.includes(message)) {
-          appendStderr(`${result.stderr ? "\n" : ""}${message}`);
+      const recordProcessFailure = (message: string) => {
+        if (!result.processError) {
+          result.processError = true;
+          result.stopReason = "error";
+          result.errorMessage = message;
+        }
+        const recordedMessage = result.errorMessage || message;
+        if (!result.stderr.includes(recordedMessage)) {
+          appendStderr(`${result.stderr ? "\n" : ""}${recordedMessage}`);
         }
         forcedExitCode = 1;
+      };
+
+      const failAndTerminate = (message: string) => {
+        recordProcessFailure(message);
         terminateChild();
       };
 
@@ -622,13 +629,9 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
 
       const flushLine = (line: string) => {
         if (Buffer.byteLength(line, "utf8") > MAX_JSON_LINE_BYTES) {
-          const message = `Subagent emitted a JSON event larger than ${MAX_JSON_LINE_BYTES} bytes.`;
-          result.processError = true;
-          result.stopReason = "error";
-          result.errorMessage = message;
-          appendStderr(`${result.stderr ? "\n" : ""}${message}`);
-          forcedExitCode = 1;
-          terminateChild();
+          failAndTerminate(
+            `Subagent emitted a JSON event larger than ${MAX_JSON_LINE_BYTES} bytes.`,
+          );
           return;
         }
         let event: any;
@@ -744,12 +747,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
           forcedExitCode,
         );
         if (signalFailure && !settled) {
-          result.processError = true;
-          result.stopReason = "error";
-          result.errorMessage = signalFailure.message;
-          if (!result.stderr.includes(signalFailure.message)) {
-            appendStderr(`${result.stderr ? "\n" : ""}${signalFailure.message}`);
-          }
+          recordProcessFailure(signalFailure.message);
           forcedExitCode = signalFailure.exitCode;
           terminateChild();
         }
@@ -761,10 +759,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<SingleResult> {
       });
 
       proc.on("error", (err) => {
-        result.processError = true;
-        result.stopReason = "error";
-        result.errorMessage = err.message;
-        if (!result.stderr.trim()) result.stderr = err.message;
+        recordProcessFailure(err.message);
         finish(1);
       });
 

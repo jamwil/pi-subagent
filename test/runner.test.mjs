@@ -7,10 +7,10 @@ import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { isResultError, isResultSuccess, normalizeCompletedResult } from "../types.ts";
 
-function createTestableRunnerModule() {
+function createTestableRunnerModule(options = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-runner-"));
   const modulePath = path.join(tmpDir, "runner.testable.ts");
-  const source = fs
+  let source = fs
     .readFileSync(path.join(process.cwd(), "runner.ts"), "utf-8")
     .replace(
       'from "@earendil-works/pi-coding-agent"',
@@ -19,6 +19,12 @@ function createTestableRunnerModule() {
     .replace('from "./runner-cli.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "runner-cli.js")).href)}`)
     .replace('from "./runner-events.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "runner-events.js")).href)}`)
     .replace('from "./types.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "types.ts")).href)}`);
+  if (options.maxJsonLineBytes !== undefined) {
+    source = source.replace(
+      "const MAX_JSON_LINE_BYTES = 25 * 1024 * 1024;",
+      `const MAX_JSON_LINE_BYTES = ${options.maxJsonLineBytes};`,
+    );
+  }
   fs.writeFileSync(modulePath, source);
   return {
     moduleUrl: pathToFileURL(modulePath).href,
@@ -874,10 +880,10 @@ test("runAgent stops inactivity timing after a named session settles", () => {
   }
 });
 
-test("runAgent preserves the watchdog reason when late RPC metadata arrives", {
+test("runAgent preserves the watchdog reason when late failures arrive", {
   skip: process.platform === "win32",
 }, () => {
-  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  const { moduleUrl, cleanup } = createTestableRunnerModule({ maxJsonLineBytes: 1024 });
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-late-rpc-"));
   const harnessPath = path.join(tmpDir, "late-rpc-harness.mjs");
 
@@ -894,6 +900,7 @@ test("runAgent preserves the watchdog reason when late RPC metadata arrives", {
         };
         process.stdout.write(JSON.stringify({ type: "message_end", message }) + "\\n");
         process.stdout.write(JSON.stringify({ type: "agent_end", messages: [message] }) + "\\n");
+        process.stdout.write("x".repeat(1025) + "\\n");
       });
       setInterval(() => {}, 1000);
     } else {
