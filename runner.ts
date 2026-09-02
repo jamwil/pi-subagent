@@ -12,6 +12,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import {
   DEFAULT_MAX_BYTES,
+  getPackageDir,
   truncateTail,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
@@ -70,16 +71,31 @@ export function getUnexpectedSignalFailure(
   };
 }
 
+function resolvePiRpcEntry(): string {
+  const packageDir = getPackageDir();
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(packageDir, "package.json"), "utf-8"),
+  ) as {
+    exports?: Record<string, string | { import?: string }>;
+  };
+  const rpcExport = manifest.exports?.["./rpc-entry"];
+  const relativePath = typeof rpcExport === "string" ? rpcExport : rpcExport?.import;
+  if (!relativePath) {
+    throw new Error("The installed Pi package does not export an RPC entrypoint.");
+  }
+  return path.resolve(packageDir, relativePath);
+}
+
 /**
  * Derive the spawn command from the current process context so child invocations
  * work on Unix and Windows without going through a shell wrapper.
  */
-function resolvePiSpawn(): { command: string; prefixArgs: string[] } {
+export function resolvePiSpawn(): { command: string; prefixArgs: string[] } {
   const isNode = /[\\/]node(?:\.exe)?$/i.test(process.execPath);
-  if (isNode && process.argv[1]) {
-    return { command: process.execPath, prefixArgs: [process.argv[1]] };
+  if (isNode) {
+    return { command: process.execPath, prefixArgs: [resolvePiRpcEntry()] };
   }
-  return { command: process.execPath, prefixArgs: [] };
+  return { command: process.execPath, prefixArgs: ["--mode", "rpc"] };
 }
 
 // ---------------------------------------------------------------------------
@@ -208,8 +224,6 @@ export function buildPiArgs(
     inheritProjectApproval,
   );
   const args: string[] = [
-    "--mode",
-    "rpc",
     ...inheritedCliArgs.extensionArgs,
     ...inheritedCliArgs.alwaysProxy,
     ...projectTrustArgs,
