@@ -11,15 +11,28 @@ import { isResultError, isResultSuccess, normalizeCompletedResult } from "../typ
 function createTestableRunnerModule(options = {}) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-runner-"));
   const modulePath = path.join(tmpDir, "runner.testable.ts");
+  const codingAgentDir = path.join(
+    process.cwd(),
+    "node_modules",
+    "@earendil-works",
+    "pi-coding-agent",
+    "dist",
+  );
   let source = fs
     .readFileSync(path.join(process.cwd(), "runner.ts"), "utf-8")
     .replace(
       'from "@earendil-works/pi-coding-agent"',
-      `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js")).href)}`,
+      `from ${JSON.stringify(pathToFileURL(path.join(codingAgentDir, "index.js")).href)}`,
     )
     .replace('from "./runner-cli.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "runner-cli.js")).href)}`)
     .replace('from "./runner-events.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "runner-events.js")).href)}`)
     .replace('from "./types.js"', `from ${JSON.stringify(pathToFileURL(path.join(process.cwd(), "types.ts")).href)}`);
+  if (options.rpcEntryPath !== undefined) {
+    source = source.replace(
+      "return { command: process.execPath, prefixArgs: [resolvePiRpcEntry()] };",
+      `return { command: process.execPath, prefixArgs: [${JSON.stringify(options.rpcEntryPath)}, "--mode", "rpc"] };`,
+    );
+  }
   if (options.maxJsonLineBytes !== undefined) {
     source = source.replace(
       "const MAX_JSON_LINE_BYTES = 25 * 1024 * 1024;",
@@ -40,9 +53,12 @@ function createTestableRunnerModule(options = {}) {
 }
 
 function createRunnerProcessHarness(name, runnerOptions = {}) {
-  const runnerModule = createTestableRunnerModule(runnerOptions);
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-subagent-${name}-`));
   const harnessPath = path.join(tmpDir, `${name}-harness.mjs`);
+  const runnerModule = createTestableRunnerModule({
+    ...runnerOptions,
+    rpcEntryPath: harnessPath,
+  });
 
   return {
     moduleUrl: runnerModule.moduleUrl,
@@ -1150,6 +1166,29 @@ test(
   },
 );
 
+test("resolvePiSpawn uses the packaged RPC entry under Node", async () => {
+  const { moduleUrl, cleanup } = createTestableRunnerModule();
+  try {
+    const { resolvePiSpawn } = await import(moduleUrl);
+    const spawn = resolvePiSpawn();
+
+    assert.equal(spawn.command, process.execPath);
+    assert.deepEqual(spawn.prefixArgs, [
+      path.join(
+        process.cwd(),
+        "node_modules",
+        "@earendil-works",
+        "pi-coding-agent",
+        "dist",
+        "rpc-entry.js",
+      ),
+    ]);
+    assert.notEqual(spawn.prefixArgs[0], process.argv[1]);
+  } finally {
+    cleanup();
+  }
+});
+
 test("buildPiArgs plans ephemeral and persistent session flags", async () => {
   const { moduleUrl, cleanup } = createTestableRunnerModule();
   try {
@@ -1171,19 +1210,17 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
 
     assert.deepEqual(
       buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined),
-      ["--mode", "rpc", "--no-session"],
+      ["--no-session"],
     );
 
     assert.deepEqual(
       buildPiArgs(agent, null, "hello", "parent", "/tmp/parent.jsonl", undefined, undefined),
-      ["--mode", "rpc", "--session", "/tmp/parent.jsonl"],
+      ["--session", "/tmp/parent.jsonl"],
     );
 
     assert.deepEqual(
       buildPiArgs(agent, null, "hello", "parent", "/tmp/parent.jsonl", session, undefined),
       [
-        "--mode",
-        "rpc",
         "--fork",
         "/tmp/parent.jsonl",
         "--session-id",
@@ -1203,7 +1240,7 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
         { ...session, created: false, initialContextApplied: null },
         undefined,
       ),
-      ["--mode", "rpc", "--session-id", "subagent.abc123"],
+      ["--session-id", "subagent.abc123"],
     );
 
     assert.deepEqual(
@@ -1216,7 +1253,7 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
         undefined,
         undefined,
       ),
-      ["--mode", "rpc", "--no-session", "--no-tools"],
+      ["--no-session", "--no-tools"],
     );
 
     const parentModel = {
@@ -1226,7 +1263,7 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
 
     assert.deepEqual(
       buildPiArgs(agent, null, "hello", "empty", null, undefined, undefined, undefined, parentModel),
-      ["--mode", "rpc", "--no-session", "--model", "openrouter/anthropic/claude-sonnet-4"],
+      ["--no-session", "--model", "openrouter/anthropic/claude-sonnet-4"],
     );
 
     assert.deepEqual(
@@ -1242,8 +1279,6 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
         parentModel,
       ),
       [
-        "--mode",
-        "rpc",
         "--session-id",
         "subagent.abc123",
         "--model",
@@ -1253,12 +1288,12 @@ test("buildPiArgs plans ephemeral and persistent session flags", async () => {
 
     assert.deepEqual(
       buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, undefined, parentModel),
-      ["--mode", "rpc", "--no-session", "--model", "agent-model"],
+      ["--no-session", "--model", "agent-model"],
     );
 
     assert.deepEqual(
       buildPiArgs({ ...agent, model: "agent-model" }, null, "hello", "empty", null, undefined, undefined, "call-model", parentModel),
-      ["--mode", "rpc", "--no-session", "--model", "call-model"],
+      ["--no-session", "--model", "call-model"],
     );
 
     assert.deepEqual(
