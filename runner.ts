@@ -16,7 +16,11 @@ import {
   truncateTail,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
-import { getInheritedProjectTrustArgs, parseInheritedCliArgs } from "./runner-cli.js";
+import {
+  getInheritedProjectTrustArgs,
+  parseInheritedCliArgs,
+  selectInheritedPiArgv,
+} from "./runner-cli.js";
 import { processPiJsonLine } from "./runner-events.js";
 import {
   type InitialContext,
@@ -171,7 +175,9 @@ export function rewriteSessionHeaderCwd(
 // Build pi CLI arguments
 // ---------------------------------------------------------------------------
 
-const inheritedCliArgs = parseInheritedCliArgs(process.argv);
+const inheritedCliArgs = parseInheritedCliArgs(
+  selectInheritedPiArgv(process.argv, process.env),
+);
 
 export interface ParentModel {
   provider: string;

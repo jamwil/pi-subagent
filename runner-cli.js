@@ -41,6 +41,11 @@ export function getInheritedProjectTrustArgs(projectTrustOverride, inheritProjec
   return [];
 }
 
+/** Exclude host arguments when Pi is embedded instead of running through its CLI. */
+export function selectInheritedPiArgv(argv, env) {
+  return env.PI_CODING_AGENT === "true" ? argv : argv.slice(0, 2);
+}
+
 /**
  * Parse process.argv into groups used for child pi invocations.
  *

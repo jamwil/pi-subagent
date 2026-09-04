@@ -3,7 +3,45 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { getInheritedProjectTrustArgs, parseInheritedCliArgs } from "../runner-cli.js";
+import {
+  getInheritedProjectTrustArgs,
+  parseInheritedCliArgs,
+  selectInheritedPiArgv,
+} from "../runner-cli.js";
+
+test("inherits arguments only from Pi entrypoints", () => {
+  const hostArgv = [
+    "/usr/bin/node",
+    "next",
+    "start",
+    "-H",
+    "0.0.0.0",
+    "--approve",
+    "--subagent-max-depth",
+    "0",
+    "--no-subagent-prevent-cycles",
+  ];
+  const piArgv = [
+    "/usr/bin/node",
+    "pi",
+    "--model",
+    "openrouter/test-model",
+    "--custom-flag",
+    "value",
+  ];
+
+  const selectedHostArgv = selectInheritedPiArgv(hostArgv, {});
+  assert.deepEqual(selectedHostArgv, hostArgv.slice(0, 2));
+  assert.deepEqual(parseInheritedCliArgs(selectedHostArgv).alwaysProxy, []);
+
+  const selectedPiArgv = selectInheritedPiArgv(piArgv, {
+    PI_CODING_AGENT: "true",
+  });
+  assert.equal(selectedPiArgv, piArgv);
+  const inherited = parseInheritedCliArgs(selectedPiArgv);
+  assert.equal(inherited.fallbackModel, "openrouter/test-model");
+  assert.deepEqual(inherited.alwaysProxy, ["--custom-flag", "value"]);
+});
 
 test("forwards safe parent CLI flags and captures fallback model settings", () => {
   const parsed = parseInheritedCliArgs([

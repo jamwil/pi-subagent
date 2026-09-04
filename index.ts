@@ -32,7 +32,7 @@ import {
 } from "./contract.js";
 import { formatCallsSummary, writeOutputArtifact } from "./output.js";
 import { renderCall, renderResult } from "./render.js";
-import { parseInheritedCliArgs } from "./runner-cli.js";
+import { parseInheritedCliArgs, selectInheritedPiArgv } from "./runner-cli.js";
 import { ensureDefaultSessionDir, getDefaultSessionDirPath } from "./session-paths.js";
 import { mapConcurrent, runAgent, type ParentModel } from "./runner.js";
 import { acquireSessionLocks, releaseSessionLocks, type SessionLockTarget } from "./session-lock.js";
@@ -63,6 +63,7 @@ const SUBAGENT_TEMP_PARENT_SESSION_ENV = "PI_SUBAGENT_TEMP_PARENT_SESSION";
 const SESSION_ID_NAMESPACE = "pi-subagent/v1";
 const SESSION_ID_PREFIX = "subagent.";
 const SESSION_HANDLE_MAX_LENGTH = 120;
+const inheritedPiArgv = selectInheritedPiArgv(process.argv, process.env);
 
 // ---------------------------------------------------------------------------
 // Tool parameter schema
@@ -257,7 +258,7 @@ export function getProjectTrustOverrideFromArgv(argv: string[]): boolean | null 
 function shouldIncludeProjectAgents(cwd: string, contextTrusted: boolean): boolean {
   if (!contextTrusted) return false;
 
-  const trustOverride = getProjectTrustOverrideFromArgv(process.argv);
+  const trustOverride = getProjectTrustOverrideFromArgv(inheritedPiArgv);
   if (trustOverride !== null) return trustOverride;
 
   try {
@@ -314,7 +315,7 @@ function resolveDelegationDepthConfig(pi: ExtensionAPI): DelegationDepthConfig {
     );
   }
 
-  const argvFlagRaw = getMaxDepthFlagFromArgv(process.argv);
+  const argvFlagRaw = getMaxDepthFlagFromArgv(inheritedPiArgv);
   const argvFlagMaxDepth =
     argvFlagRaw !== null ? parseNonNegativeInt(argvFlagRaw) : null;
   if (argvFlagRaw !== null && argvFlagMaxDepth === null) {
@@ -346,7 +347,7 @@ function resolveDelegationDepthConfig(pi: ExtensionAPI): DelegationDepthConfig {
     );
   }
 
-  const argvPreventCyclesRaw = getPreventCyclesFlagFromArgv(process.argv);
+  const argvPreventCyclesRaw = getPreventCyclesFlagFromArgv(inheritedPiArgv);
   const argvPreventCycles =
     typeof argvPreventCyclesRaw === "boolean"
       ? argvPreventCyclesRaw
